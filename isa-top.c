@@ -16,6 +16,9 @@
 #include <time.h>
 #include <ifaddrs.h>
 #include <net/if.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netdb.h>
 
 #if defined(__APPLE__) || defined(__MACH__)
 // macOS
@@ -38,10 +41,10 @@ char local_ips[MAX_IP_ADDRESSES][INET6_ADDRSTRLEN];
 int local_ip_count = 0;
 
 typedef struct {
-    char src_ip[INET6_ADDRSTRLEN];
-    char dst_ip[INET6_ADDRSTRLEN];
-    uint16_t src_port;
-    uint16_t dst_port;
+    char ip1[INET6_ADDRSTRLEN];
+    char ip2[INET6_ADDRSTRLEN];
+    uint16_t port1;
+    uint16_t port2;
     char protocol[8];
     uint64_t rx_bytes;
     uint64_t tx_bytes;
@@ -135,35 +138,90 @@ void get_local_ips(char *interface) {
     freeifaddrs(ifaddr);
 }
 
-// Поиск существующего соединения
-int find_connection(char *src_ip, char *dst_ip, uint16_t src_port, uint16_t dst_port, char *protocol) {
-    for (int i = 0; i < connection_count; i++) // Поиск существующего соединения
-    {
-        if (strcmp(connections[i].src_ip, src_ip) == 0 &&
-            strcmp(connections[i].dst_ip, dst_ip) == 0 &&
-            connections[i].src_port == src_port &&
-            connections[i].dst_port == dst_port &&
-            strcmp(connections[i].protocol, protocol) == 0) {
-            fprintf(stderr, "Найдено существующее соединение (%s:%d -> %s:%d)\n", src_ip, src_port, dst_ip, dst_port);
+// Функция для создания уникального ключа соединения
+typedef struct {
+    char ip1[INET6_ADDRSTRLEN];
+    char ip2[INET6_ADDRSTRLEN];
+    uint16_t port1;
+    uint16_t port2;
+    char protocol[8];
+} ConnectionKey;
+
+// Сравнение двух ключей соединений (без учета направления)
+int compare_keys(ConnectionKey *key1, ConnectionKey *key2) {
+    // Сравниваем ip1 и ip2 в обоих направлениях
+    if (strcmp(key1->ip1, key2->ip1) == 0 &&
+        strcmp(key1->ip2, key2->ip2) == 0 &&
+        key1->port1 == key2->port1 &&
+        key1->port2 == key2->port2 &&
+        strcmp(key1->protocol, key2->protocol) == 0) {
+        return 1;
+    }
+
+    if (strcmp(key1->ip1, key2->ip2) == 0 &&
+        strcmp(key1->ip2, key2->ip1) == 0 &&
+        key1->port1 == key2->port2 &&
+        key1->port2 == key2->port1 &&
+        strcmp(key1->protocol, key2->protocol) == 0) {
+        return 1;
+    }
+
+    return 0;
+}
+
+// Поиск существующего соединения независимо от направления
+int find_connection(ConnectionKey *key) {
+    for (int i = 0; i < connection_count; i++) {
+        ConnectionKey existing_key;
+        strcpy(existing_key.ip1, connections[i].ip1);
+        strcpy(existing_key.ip2, connections[i].ip2);
+        existing_key.port1 = connections[i].port1;
+        existing_key.port2 = connections[i].port2;
+        strcpy(existing_key.protocol, connections[i].protocol);
+
+        if (compare_keys(&existing_key, key)) {
+            fprintf(stderr, "Найдено существующее соединение (%s:%d <-> %s:%d)\n",
+                    connections[i].ip1, connections[i].port1,
+                    connections[i].ip2, connections[i].port2);
             return i;
         }
     }
     // Новое соединение
-    fprintf(stderr, "Новое соединение (%s:%d -> %s:%d)\n", src_ip, src_port, dst_ip, dst_port);
+    fprintf(stderr, "Новое соединение (%s:%d <-> %s:%d)\n",
+            key->ip1, key->port1,
+            key->ip2, key->port2);
     return -1;
 }
 
 // Обновление статистики соединения
-void update_connection(char *src_ip, char *dst_ip, uint16_t src_port, uint16_t dst_port, char *protocol, uint32_t bytes, int direction) {
-    int index = find_connection(src_ip, dst_ip, src_port, dst_port, protocol);
+void update_connection(char *src_ip, char *dst_ip, uint16_t src_port, uint16_t dst_port,
+                      char *protocol, uint32_t bytes, int direction) {
+    ConnectionKey key;
+
+    // Упорядочиваем IP и порты для консистентности
+    if (strcmp(src_ip, dst_ip) < 0 || (strcmp(src_ip, dst_ip) == 0 && src_port <= dst_port)) {
+        strcpy(key.ip1, src_ip);
+        strcpy(key.ip2, dst_ip);
+        key.port1 = src_port;
+        key.port2 = dst_port;
+    } else {
+        strcpy(key.ip1, dst_ip);
+        strcpy(key.ip2, src_ip);
+        key.port1 = dst_port;
+        key.port2 = src_port;
+    }
+
+    strcpy(key.protocol, protocol);
+
+    int index = find_connection(&key);
     if (index == -1) {
         if (connection_count < MAX_CONNECTIONS) {
             index = connection_count++;
-            strcpy(connections[index].src_ip, src_ip);
-            strcpy(connections[index].dst_ip, dst_ip);
-            connections[index].src_port = src_port;
-            connections[index].dst_port = dst_port;
-            strcpy(connections[index].protocol, protocol);
+            strcpy(connections[index].ip1, key.ip1);
+            strcpy(connections[index].ip2, key.ip2);
+            connections[index].port1 = key.port1;
+            connections[index].port2 = key.port2;
+            strcpy(connections[index].protocol, key.protocol);
             connections[index].rx_bytes = 0;
             connections[index].tx_bytes = 0;
             connections[index].rx_packets = 0;
@@ -176,14 +234,14 @@ void update_connection(char *src_ip, char *dst_ip, uint16_t src_port, uint16_t d
         }
     }
 
-    if (direction == 0) { // Прием
+    if (direction == 0) { // Прием (Rx)
         connections[index].rx_bytes += bytes;
         connections[index].rx_packets += 1;
-        fprintf(stderr, "Обновление IN для соединения %d: +%u байт, DIERCTION == %d\n", index, bytes, direction);
-    } else { // Передача
+        fprintf(stderr, "Обновление Rx для соединения %d: +%u байт\n", index, bytes);
+    } else { // Передача (Tx)
         connections[index].tx_bytes += bytes;
         connections[index].tx_packets += 1;
-        fprintf(stderr, "Обновление OUT для соединения %d: +%u байт, DIERCTION == %d\n", index, bytes, direction);
+        fprintf(stderr, "Обновление Tx для соединения %d: +%u байт\n", index, bytes);
     }
     connections[index].last_update = time(NULL);
 }
@@ -235,16 +293,16 @@ void display_statistics() {
     clear();
 
     // Выводим заголовки
-    mvprintw(0, 0, "Src IP:port                    Dst IP:port                    Proto    Rx                Tx");
+    mvprintw(0, 0, "IP1:port                       IP2:port                       Proto    Rx                Tx");
 
     // Текущее время для вычисления скорости
     time_t now = time(NULL);
 
     // Выводим топ-10 соединений
     for (int i = 0; i < connection_count && i < 10; i++) {
-        char src[50], dst[50], rx_bw[16], tx_bw[16];
-        snprintf(src, 50, "%s:%d", connections[i].src_ip, connections[i].src_port);
-        snprintf(dst, 50, "%s:%d", connections[i].dst_ip, connections[i].dst_port);
+        char ip1[50], ip2[50], rx_bw[16], tx_bw[16];
+        snprintf(ip1, 50, "%s:%d", connections[i].ip1, connections[i].port1);
+        snprintf(ip2, 50, "%s:%d", connections[i].ip2, connections[i].port2);
 
         double time_diff = difftime(now, connections[i].last_update);
         if (time_diff == 0) time_diff = interval;
@@ -253,11 +311,11 @@ void display_statistics() {
         format_bandwidth(connections[i].tx_bytes, time_diff, tx_bw);
 
         mvprintw(i + 2, 0, "%-30s %-30s %-8s %-15s %-15s",
-                 src, dst, connections[i].protocol, rx_bw, tx_bw);
+                 ip1, ip2, connections[i].protocol, rx_bw, tx_bw);
 
-        fprintf(stderr, "Соединение %d: %s:%d -> %s:%d, Протокол: %s, Rx: %s, Tx: %s\n",
-                i, connections[i].src_ip, connections[i].src_port,
-                connections[i].dst_ip, connections[i].dst_port,
+        fprintf(stderr, "Соединение %d: %s:%d <-> %s:%d, Протокол: %s, Rx: %s, Tx: %s\n",
+                i, connections[i].ip1, connections[i].port1,
+                connections[i].ip2, connections[i].port2,
                 connections[i].protocol, rx_bw, tx_bw);
 
         // Сбрасываем счетчики после отображения
@@ -350,6 +408,7 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
             // Пакет не относится к нашему хосту
             return;
         }
+        fprintf(stderr, "Направление пакета: %s\n", direction == 0 ? "Входящий" : "Исходящий");
 
         uint8_t next_header = ip6_hdr->ip6_nxt;
         uint16_t src_port = 0;
