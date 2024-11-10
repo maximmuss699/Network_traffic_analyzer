@@ -266,16 +266,16 @@ void update_connection(char *src_ip, char *dst_ip, uint16_t src_port, uint16_t d
     }
 }
 
-// Форматирование скорости передачи данных
-void format_bandwidth(double bytes, double interval, char *output) {
+void format_bandwidth(double bytes, double interval, char *output, char *unit_str) {
     double bps = bytes / interval;
-    const char *units[] = {"B/s", "KB/s", "MB/s", "GB/s"};
+    const char *units[] = {"B", "k", "M", "G"};
     int unit = 0;
     while (bps >= 1024 && unit < 3) {
         bps /= 1024;
         unit++;
     }
-    snprintf(output, 16, "%.1f %s", bps, units[unit]);
+    strcpy(unit_str, units[unit]);
+    snprintf(output, 16, "%.1f", bps);
 }
 
 // Сравнение по общему количеству байт
@@ -306,7 +306,8 @@ void display_statistics() {
     clear();
 
     // Выводим заголовки
-    mvprintw(0, 0, "Src IP:port                  Dst IP:port                  Proto    Rx (B/s P/s)      Tx (B/s P/s)");
+    mvprintw(0, 0, "Src IP:port                          Dst IP:port                     Proto             Rx         Tx");
+    mvprintw(1, 0, "                                                                                          b/s p/s     b/s p/s");
 
     // Сортируем соединения
     if (sort_mode == 'b') {
@@ -328,21 +329,23 @@ void display_statistics() {
         double time_diff = (double)interval;
         if (time_diff == 0) time_diff = 1.0;
 
-        // Вычисляем скорость в байтах в секунду
-        format_bandwidth(connections[i].rx_bytes, time_diff, rx_bw);
-        format_bandwidth(connections[i].tx_bytes, time_diff, tx_bw);
+        char rx_unit[4], tx_unit[4];
+        format_bandwidth(connections[i].rx_bytes, time_diff, rx_bw, rx_unit);
+        format_bandwidth(connections[i].tx_bytes, time_diff, tx_bw, tx_unit);
 
         // Вычисляем пакеты в секунду
         double rx_pps = connections[i].rx_packets / time_diff;
         double tx_pps = connections[i].tx_packets / time_diff;
 
         // Форматируем строку вывода
-        mvprintw(i + 1, 0, "%-30s %-30s %-8s %-12s %-6.1f    %-12s %-6.1f",
-                 src, dst, connections[i].protocol, rx_bw, rx_pps, tx_bw, tx_pps);
+        mvprintw(i + 2, 0, "%-30s %-30s %-8s %-6s%-2s %-4.1f %-6s%-2s %-4.1f",
+                 src, dst, connections[i].protocol,
+                 rx_bw, rx_unit, rx_pps,
+                 tx_bw, tx_unit, tx_pps);
 
         if (debug_mode) {
-            fprintf(log_file, "Соединение %d: %s <-> %s, Протокол: %s, Rx: %s (%.1f p/s), Tx: %s (%.1f p/s)\n",
-                    i, src, dst, connections[i].protocol, rx_bw, rx_pps, tx_bw, tx_pps);
+            fprintf(log_file, "Соединение %d: %s <-> %s, Протокол: %s, Rx: %s%s (%.1f p/s), Tx: %s%s (%.1f p/s)\n",
+                    i, src, dst, connections[i].protocol, rx_bw, rx_unit, rx_pps, tx_bw, tx_unit, tx_pps);
         }
 
         // Сбрасываем счетчики после отображения
@@ -740,7 +743,8 @@ int main(int argc, char *argv[]) {
             packet_handler(NULL, header, packet);
         } else if (ret == 0) {
             // Нет пакетов в буфере, спим немного
-            fprintf(log_file, "Нет пакетов в буфере\n");
+            if (debug_mode)
+                fprintf(log_file, "Нет пакетов в буфере\n");
             usleep(1000); // Спим 1 мс
         } else if (ret == -1) {
             fprintf(stderr, "Ошибка при захвате пакетов: %s\n", pcap_geterr(handle));
