@@ -19,6 +19,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netdb.h>
+#include <sys/time.h>
 
 #if defined(__APPLE__) || defined(__MACH__)
 // macOS
@@ -50,7 +51,6 @@ typedef struct {
     uint64_t tx_bytes;
     uint64_t rx_packets;
     uint64_t tx_packets;
-    time_t last_update;
 } Connection;
 
 Connection connections[MAX_CONNECTIONS];
@@ -60,8 +60,16 @@ int connection_count = 0;
 char *interface = NULL;
 char sort_mode = 'b';
 int interval = 1;
+int debug_mode = 0;
+
+int linktype = -1;
 
 volatile sig_atomic_t stop = 0;
+
+pcap_t *handle = NULL;
+
+// Переменная для файла логирования
+FILE *log_file = NULL;
 
 // Структура для хранения настроек
 typedef struct {
@@ -75,26 +83,17 @@ int parse_arguments(int argc, char *argv[], Settings *settings);
 
 // Функция вывода справки
 void print_usage() {
-    fprintf(stderr, "Использование: isa-top -i <interface> [-s b|p] [-t interval]\n");
+    fprintf(stderr, "Использование: isa-top -i <interface> [-s b|p] [-t interval] [-d]\n");
     fprintf(stderr, "  -i <interface> : Укажите сетевой интерфейс для мониторинга (обязательно)\n");
     fprintf(stderr, "  -s b|p         : Режим сортировки: 'b' для байтов, 'p' для пакетов (по умолчанию 'b')\n");
     fprintf(stderr, "  -t interval    : Интервал обновления статистики в секундах (по умолчанию 1)\n");
+    fprintf(stderr, "  -d             : Включить режим отладки\n");
 }
 
 // Обработчик сигнала SIGINT
 void handle_sigint(int sig) {
-    fprintf(stderr, "Получен сигнал SIGINT, завершаем работу...\n");
+    pcap_breakloop(handle);
     stop = 1;
-}
-
-// Проверка, является ли IP-адрес локальным
-int is_local_ip(char *ip) {
-    for (int i = 0; i < local_ip_count; i++) {
-        if (strcmp(ip, local_ips[i]) == 0) {
-            return 1;
-        }
-    }
-    return 0;
 }
 
 // Получение локальных IP-адресов указанного интерфейса
@@ -127,7 +126,8 @@ void get_local_ips(char *interface) {
                                 NULL, 0, NI_NUMERICHOST);
             if (s == 0) {
                 strcpy(local_ips[local_ip_count], host);
-                fprintf(stderr, "Локальный IP адрес (%s): %s\n", interface, host);
+                if (debug_mode)
+                    fprintf(log_file, "Локальный IP адрес (%s): %s\n", interface, host);
                 local_ip_count++;
             } else {
                 fprintf(stderr, "getnameinfo() failed: %s\n", gai_strerror(s));
@@ -138,7 +138,34 @@ void get_local_ips(char *interface) {
     freeifaddrs(ifaddr);
 }
 
-// Функция для создания уникального ключа соединения
+// Проверка, является ли IP локальным
+int is_local_ip(char *ip) {
+    char ip_copy[INET6_ADDRSTRLEN];
+    char packet_ip_copy[INET6_ADDRSTRLEN];
+
+    for (int i = 0; i < local_ip_count; i++) {
+        // Копируем локальный IP и удаляем идентификатор области, если есть
+        strncpy(ip_copy, local_ips[i], INET6_ADDRSTRLEN);
+        char *percent = strchr(ip_copy, '%');
+        if (percent) {
+            *percent = '\0';
+        }
+
+        // Копируем IP из пакета и удаляем идентификатор области, если есть
+        strncpy(packet_ip_copy, ip, INET6_ADDRSTRLEN);
+        percent = strchr(packet_ip_copy, '%');
+        if (percent) {
+            *percent = '\0';
+        }
+
+        if (strcmp(ip_copy, packet_ip_copy) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Структура для создания уникального ключа соединения
 typedef struct {
     char ip1[INET6_ADDRSTRLEN];
     char ip2[INET6_ADDRSTRLEN];
@@ -180,16 +207,10 @@ int find_connection(ConnectionKey *key) {
         strcpy(existing_key.protocol, connections[i].protocol);
 
         if (compare_keys(&existing_key, key)) {
-            fprintf(stderr, "Найдено существующее соединение (%s:%d <-> %s:%d)\n",
-                    connections[i].ip1, connections[i].port1,
-                    connections[i].ip2, connections[i].port2);
             return i;
         }
     }
     // Новое соединение
-    fprintf(stderr, "Новое соединение (%s:%d <-> %s:%d)\n",
-            key->ip1, key->port1,
-            key->ip2, key->port2);
     return -1;
 }
 
@@ -226,10 +247,12 @@ void update_connection(char *src_ip, char *dst_ip, uint16_t src_port, uint16_t d
             connections[index].tx_bytes = 0;
             connections[index].rx_packets = 0;
             connections[index].tx_packets = 0;
-            connections[index].last_update = time(NULL);
-            fprintf(stderr, "Добавлено новое соединение в список (index: %d)\n", index);
+            if (debug_mode)
+                fprintf(log_file, "Добавлено новое соединение: %s:%d <-> %s:%d (%s)\n",
+                        key.ip1, key.port1, key.ip2, key.port2, key.protocol);
         } else {
-            fprintf(stderr, "Превышено максимальное количество соединений (%d)\n", MAX_CONNECTIONS);
+            if (debug_mode)
+                fprintf(log_file, "Превышено максимальное количество соединений (%d)\n", MAX_CONNECTIONS);
             return;
         }
     }
@@ -237,13 +260,10 @@ void update_connection(char *src_ip, char *dst_ip, uint16_t src_port, uint16_t d
     if (direction == 0) { // Прием (Rx)
         connections[index].rx_bytes += bytes;
         connections[index].rx_packets += 1;
-        fprintf(stderr, "Обновление Rx для соединения %d: +%u байт\n", index, bytes);
     } else { // Передача (Tx)
         connections[index].tx_bytes += bytes;
         connections[index].tx_packets += 1;
-        fprintf(stderr, "Обновление Tx для соединения %d: +%u байт\n", index, bytes);
     }
-    connections[index].last_update = time(NULL);
 }
 
 // Форматирование скорости передачи данных
@@ -264,7 +284,9 @@ int compare_bytes(const void *a, const void *b) {
     Connection *connB = (Connection *)b;
     uint64_t totalA = connA->rx_bytes + connA->tx_bytes;
     uint64_t totalB = connB->rx_bytes + connB->tx_bytes;
-    return (totalB > totalA) - (totalB < totalA);
+    if (totalA < totalB) return 1;
+    if (totalA > totalB) return -1;
+    return 0;
 }
 
 // Сравнение по общему количеству пакетов
@@ -273,57 +295,61 @@ int compare_packets(const void *a, const void *b) {
     Connection *connB = (Connection *)b;
     uint64_t totalA = connA->rx_packets + connA->tx_packets;
     uint64_t totalB = connB->rx_packets + connB->tx_packets;
-    return (totalB > totalA) - (totalB < totalA);
+    if (totalA < totalB) return 1;
+    if (totalA > totalB) return -1;
+    return 0;
 }
 
 // Отображение статистики
 void display_statistics() {
-    fprintf(stderr, "Обновление статистики...\n");
-
-    // Сортируем соединения
-    if (sort_mode == 'b') {
-        qsort(connections, connection_count, sizeof(Connection), compare_bytes);
-        fprintf(stderr, "Соединения отсортированы по байтам\n");
-    } else {
-        qsort(connections, connection_count, sizeof(Connection), compare_packets);
-        fprintf(stderr, "Соединения отсортированы по пакетам\n");
-    }
-
     // Очищаем экран
     clear();
 
     // Выводим заголовки
-    mvprintw(0, 0, "IP1:port                       IP2:port                       Proto    Rx                Tx");
+    mvprintw(0, 0, "Src IP:port                  Dst IP:port                  Proto    Rx (B/s P/s)      Tx (B/s P/s)");
 
-    // Текущее время для вычисления скорости
-    time_t now = time(NULL);
+    // Сортируем соединения
+    if (sort_mode == 'b') {
+        qsort(connections, connection_count, sizeof(Connection), compare_bytes);
+        if (debug_mode)
+            fprintf(log_file, "Соединения отсортированы по байтам\n");
+    } else {
+        qsort(connections, connection_count, sizeof(Connection), compare_packets);
+        if (debug_mode)
+            fprintf(log_file, "Соединения отсортированы по пакетам\n");
+    }
 
     // Выводим топ-10 соединений
     for (int i = 0; i < connection_count && i < 10; i++) {
-        char ip1[50], ip2[50], rx_bw[16], tx_bw[16];
-        snprintf(ip1, 50, "%s:%d", connections[i].ip1, connections[i].port1);
-        snprintf(ip2, 50, "%s:%d", connections[i].ip2, connections[i].port2);
+        char src[50], dst[50], rx_bw[16], tx_bw[16];
+        snprintf(src, 50, "%s:%d", connections[i].ip1, connections[i].port1);
+        snprintf(dst, 50, "%s:%d", connections[i].ip2, connections[i].port2);
 
-        double time_diff = difftime(now, connections[i].last_update);
-        if (time_diff == 0) time_diff = interval;
+        double time_diff = (double)interval;
+        if (time_diff == 0) time_diff = 1.0;
 
+        // Вычисляем скорость в байтах в секунду
         format_bandwidth(connections[i].rx_bytes, time_diff, rx_bw);
         format_bandwidth(connections[i].tx_bytes, time_diff, tx_bw);
 
-        mvprintw(i + 2, 0, "%-30s %-30s %-8s %-15s %-15s",
-                 ip1, ip2, connections[i].protocol, rx_bw, tx_bw);
+        // Вычисляем пакеты в секунду
+        double rx_pps = connections[i].rx_packets / time_diff;
+        double tx_pps = connections[i].tx_packets / time_diff;
 
-        fprintf(stderr, "Соединение %d: %s:%d <-> %s:%d, Протокол: %s, Rx: %s, Tx: %s\n",
-                i, connections[i].ip1, connections[i].port1,
-                connections[i].ip2, connections[i].port2,
-                connections[i].protocol, rx_bw, tx_bw);
+        // Форматируем строку вывода
+        mvprintw(i + 1, 0, "%-30s %-30s %-8s %-12s %-6.1f    %-12s %-6.1f",
+                 src, dst, connections[i].protocol, rx_bw, rx_pps, tx_bw, tx_pps);
+
+        if (debug_mode) {
+            fprintf(log_file, "Соединение %d: %s <-> %s, Протокол: %s, Rx: %s (%.1f p/s), Tx: %s (%.1f p/s)\n",
+                    i, src, dst, connections[i].protocol, rx_bw, rx_pps, tx_bw, tx_pps);
+        }
 
         // Сбрасываем счетчики после отображения
         connections[i].rx_bytes = 0;
         connections[i].tx_bytes = 0;
         connections[i].rx_packets = 0;
         connections[i].tx_packets = 0;
-        connections[i].last_update = now;
     }
 
     // Обновляем экран
@@ -332,117 +358,264 @@ void display_statistics() {
 
 // Обработчик захваченного пакета
 void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
-    fprintf(stderr, "Захвачен пакет длиной %u байт\n", header->len);
-    int ethernet_header_length = 14; // Стандартная длина Ethernet заголовка
+    if (debug_mode)
+        fprintf(log_file, "Захвачен пакет длиной %u байт\n", header->len);
 
-    uint16_t eth_type = ntohs(*(uint16_t*)(packet + 12));
-    fprintf(stderr, "Ethernet Type: 0x%04x\n", eth_type);
-    int direction;
-
-    if (eth_type == 0x0800) { // IPv4
-        struct ip *ip_hdr = (struct ip*)(packet + ethernet_header_length);
-        char src_ip[INET_ADDRSTRLEN];
-        char dst_ip[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &(ip_hdr->ip_src), src_ip, INET_ADDRSTRLEN);
-        inet_ntop(AF_INET, &(ip_hdr->ip_dst), dst_ip, INET_ADDRSTRLEN);
-        fprintf(stderr, "IPv4 пакет: %s -> %s\n", src_ip, dst_ip);
-
-        // Определяем направление пакета
-        if (is_local_ip(src_ip)) {
-            // Исходящий пакет
-            direction = 1;
-        } else if (is_local_ip(dst_ip)) {
-            // Входящий пакет
-            direction = 0;
-        } else {
-            // Пакет не относится к нашему хосту
+    if (linktype == DLT_EN10MB) { // Ethernet
+        int ethernet_header_length = 14; // Стандартная длина Ethernet заголовка
+        if (header->len < ethernet_header_length) {
+            // Пакет слишком короткий для Ethernet заголовка
             return;
         }
-        fprintf(stderr, "Направление пакета: %s\n", direction == 0 ? "Входящий" : "Исходящий");
 
-        uint8_t protocol = ip_hdr->ip_p;
-        uint16_t src_port = 0;
-        uint16_t dst_port = 0;
-        char proto_str[8];
+        uint16_t eth_type = ntohs(*(uint16_t*)(packet + 12));
 
-        const u_char *transport_header = packet + ethernet_header_length + (ip_hdr->ip_hl * 4);
+        if (eth_type == 0x0800) { // IPv4
+            if (header->len < ethernet_header_length + sizeof(struct ip)) {
+                // Пакет слишком короткий для IPv4 заголовка
+                return;
+            }
 
-        if (protocol == IPPROTO_TCP) {
-            struct tcphdr *tcp_hdr = (struct tcphdr*)transport_header;
-            src_port = ntohs(TCP_SRC_PORT(tcp_hdr));
-            dst_port = ntohs(TCP_DST_PORT(tcp_hdr));
-            strcpy(proto_str, "tcp");
-            fprintf(stderr, "TCP пакет: %s:%d -> %s:%d\n", src_ip, src_port, dst_ip, dst_port);
-        } else if (protocol == IPPROTO_UDP) {
-            struct udphdr *udp_hdr = (struct udphdr*)transport_header;
-            src_port = ntohs(UDP_SRC_PORT(udp_hdr));
-            dst_port = ntohs(UDP_DST_PORT(udp_hdr));
-            strcpy(proto_str, "udp");
-            fprintf(stderr, "UDP пакет: %s:%d -> %s:%d\n", src_ip, src_port, dst_ip, dst_port);
-        } else if (protocol == IPPROTO_ICMP) {
-            strcpy(proto_str, "icmp");
-            fprintf(stderr, "ICMP пакет: %s -> %s\n", src_ip, dst_ip);
-        } else {
-            strcpy(proto_str, "other");
-            fprintf(stderr, "Другой протокол (%d): %s -> %s\n", protocol, src_ip, dst_ip);
+            struct ip *ip_hdr = (struct ip*)(packet + ethernet_header_length);
+            char src_ip[INET_ADDRSTRLEN];
+            char dst_ip[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &(ip_hdr->ip_src), src_ip, INET_ADDRSTRLEN);
+            inet_ntop(AF_INET, &(ip_hdr->ip_dst), dst_ip, INET_ADDRSTRLEN);
+
+            // Определяем направление пакета
+            int direction;
+            if (is_local_ip(src_ip)) {
+                direction = 1; // Исходящий
+            } else if (is_local_ip(dst_ip)) {
+                direction = 0; // Входящий
+            } else {
+                // Пакет не относится к нашему хосту
+                return;
+            }
+
+            uint8_t protocol = ip_hdr->ip_p;
+            uint16_t src_port = 0;
+            uint16_t dst_port = 0;
+            char proto_str[8] = "other";
+
+            const u_char *transport_header = packet + ethernet_header_length + (ip_hdr->ip_hl * 4);
+
+            if (protocol == IPPROTO_TCP) {
+                if (header->len < ethernet_header_length + (ip_hdr->ip_hl * 4) + sizeof(struct tcphdr)) {
+                    // Пакет слишком короткий для TCP заголовка
+                    return;
+                }
+                struct tcphdr *tcp_hdr = (struct tcphdr*)transport_header;
+                src_port = ntohs(TCP_SRC_PORT(tcp_hdr));
+                dst_port = ntohs(TCP_DST_PORT(tcp_hdr));
+                strcpy(proto_str, "tcp");
+            }
+            else if (protocol == IPPROTO_UDP) {
+                if (header->len < ethernet_header_length + (ip_hdr->ip_hl * 4) + sizeof(struct udphdr)) {
+                    // Пакет слишком короткий для UDP заголовка
+                    return;
+                }
+                struct udphdr *udp_hdr = (struct udphdr*)transport_header;
+                src_port = ntohs(UDP_SRC_PORT(udp_hdr));
+                dst_port = ntohs(UDP_DST_PORT(udp_hdr));
+                strcpy(proto_str, "udp");
+            }
+            else if (protocol == IPPROTO_ICMP) {
+                strcpy(proto_str, "icmp");
+            }
+
+            update_connection(src_ip, dst_ip, src_port, dst_port, proto_str, header->len - ethernet_header_length, direction);
+        }
+        else if (eth_type == 0x86DD) { // IPv6
+            if (header->len < ethernet_header_length + sizeof(struct ip6_hdr)) {
+                // Пакет слишком короткий для IPv6 заголовка
+                return;
+            }
+
+            struct ip6_hdr *ip6_hdr = (struct ip6_hdr*)(packet + ethernet_header_length);
+            char src_ip[INET6_ADDRSTRLEN];
+            char dst_ip[INET6_ADDRSTRLEN];
+            inet_ntop(AF_INET6, &(ip6_hdr->ip6_src), src_ip, INET6_ADDRSTRLEN);
+            inet_ntop(AF_INET6, &(ip6_hdr->ip6_dst), dst_ip, INET6_ADDRSTRLEN);
+
+            // Определяем направление пакета
+            int direction;
+            if (is_local_ip(src_ip)) {
+                direction = 1; // Исходящий
+            }
+            else if (is_local_ip(dst_ip)) {
+                direction = 0; // Входящий
+            }
+            else {
+                // Пакет не относится к нашему хосту
+                return;
+            }
+
+            uint8_t next_header = ip6_hdr->ip6_nxt;
+            uint16_t src_port = 0;
+            uint16_t dst_port = 0;
+            char proto_str[8] = "other";
+
+            const u_char *transport_header = packet + ethernet_header_length + sizeof(struct ip6_hdr);
+
+            if (next_header == IPPROTO_TCP) {
+                if (header->len < ethernet_header_length + sizeof(struct ip6_hdr) + sizeof(struct tcphdr)) {
+                    // Пакет слишком короткий для TCP заголовка
+                    return;
+                }
+                struct tcphdr *tcp_hdr = (struct tcphdr*)transport_header;
+                src_port = ntohs(TCP_SRC_PORT(tcp_hdr));
+                dst_port = ntohs(TCP_DST_PORT(tcp_hdr));
+                strcpy(proto_str, "tcp");
+            }
+            else if (next_header == IPPROTO_UDP) {
+                if (header->len < ethernet_header_length + sizeof(struct ip6_hdr) + sizeof(struct udphdr)) {
+                    // Пакет слишком короткий для UDP заголовка
+                    return;
+                }
+                struct udphdr *udp_hdr = (struct udphdr*)transport_header;
+                src_port = ntohs(UDP_SRC_PORT(udp_hdr));
+                dst_port = ntohs(UDP_DST_PORT(udp_hdr));
+                strcpy(proto_str, "udp");
+            }
+            else if (next_header == IPPROTO_ICMPV6) {
+                strcpy(proto_str, "icmp6");
+            }
+
+            update_connection(src_ip, dst_ip, src_port, dst_port, proto_str, header->len - ethernet_header_length, direction);
+        }
+    }
+    else if (linktype == DLT_NULL) { // Loopback (например, lo0 на macOS)
+        if (header->len < 4) {
+            // Пакет слишком короткий для заголовка DLT_NULL
+            return;
         }
 
-        update_connection(src_ip, dst_ip, src_port, dst_port, proto_str, header->len, direction);
+        uint32_t af = *(uint32_t*)packet;
 
-    } else if (eth_type == 0x86DD) { // IPv6
-        struct ip6_hdr *ip6_hdr = (struct ip6_hdr*)(packet + ethernet_header_length);
         char src_ip[INET6_ADDRSTRLEN];
         char dst_ip[INET6_ADDRSTRLEN];
-        inet_ntop(AF_INET6, &(ip6_hdr->ip6_src), src_ip, INET6_ADDRSTRLEN);
-        inet_ntop(AF_INET6, &(ip6_hdr->ip6_dst), dst_ip, INET6_ADDRSTRLEN);
-        fprintf(stderr, "IPv6 пакет: %s -> %s\n", src_ip, dst_ip);
+        char protocol[8] = "other";
+        uint16_t src_port = 0, dst_port = 0;
 
-        // Определяем направление пакета
-        if (is_local_ip(src_ip)) {
-            // Исходящий пакет
-            direction = 1;
-        } else if (is_local_ip(dst_ip)) {
-            // Входящий пакет
-            direction = 0;
-        } else {
-            // Пакет не относится к нашему хосту
+        const u_char *ip_packet = packet + 4;
+
+        if (af == AF_INET) { // IPv4
+            if (header->len < 4 + sizeof(struct ip)) {
+                // Пакет слишком короткий для IPv4 заголовка
+                return;
+            }
+
+            struct ip *ip_hdr = (struct ip*)ip_packet;
+            inet_ntop(AF_INET, &(ip_hdr->ip_src), src_ip, INET_ADDRSTRLEN);
+            inet_ntop(AF_INET, &(ip_hdr->ip_dst), dst_ip, INET_ADDRSTRLEN);
+
+            // Определяем направление пакета
+            int direction;
+            if (is_local_ip(src_ip)) {
+                direction = 1; // Исходящий
+            }
+            else if (is_local_ip(dst_ip)) {
+                direction = 0; // Входящий
+            }
+            else {
+                // Пакет не относится к нашему хосту
+                return;
+            }
+
+            uint8_t protocol_num = ip_hdr->ip_p;
+
+            const u_char *transport_header = ip_packet + (ip_hdr->ip_hl * 4);
+
+            if (protocol_num == IPPROTO_TCP) {
+                if (header->len < 4 + (ip_hdr->ip_hl * 4) + sizeof(struct tcphdr)) {
+                    // Пакет слишком короткий для TCP заголовка
+                    return;
+                }
+                struct tcphdr *tcp_hdr = (struct tcphdr*)transport_header;
+                src_port = ntohs(TCP_SRC_PORT(tcp_hdr));
+                dst_port = ntohs(TCP_DST_PORT(tcp_hdr));
+                strcpy(protocol, "tcp");
+            }
+            else if (protocol_num == IPPROTO_UDP) {
+                if (header->len < 4 + (ip_hdr->ip_hl * 4) + sizeof(struct udphdr)) {
+                    // Пакет слишком короткий для UDP заголовка
+                    return;
+                }
+                struct udphdr *udp_hdr = (struct udphdr*)transport_header;
+                src_port = ntohs(UDP_SRC_PORT(udp_hdr));
+                dst_port = ntohs(UDP_DST_PORT(udp_hdr));
+                strcpy(protocol, "udp");
+            }
+            else if (protocol_num == IPPROTO_ICMP) {
+                strcpy(protocol, "icmp");
+            }
+            else {
+                strcpy(protocol, "other");
+            }
+
+            update_connection(src_ip, dst_ip, src_port, dst_port, protocol, header->len - 4, direction);
+        }
+        else if (af == AF_INET6) { // IPv6
+            if (header->len < 4 + sizeof(struct ip6_hdr)) {
+                // Пакет слишком короткий для IPv6 заголовка
+                return;
+            }
+
+            struct ip6_hdr *ip6_hdr = (struct ip6_hdr*)ip_packet;
+            inet_ntop(AF_INET6, &(ip6_hdr->ip6_src), src_ip, INET6_ADDRSTRLEN);
+            inet_ntop(AF_INET6, &(ip6_hdr->ip6_dst), dst_ip, INET6_ADDRSTRLEN);
+
+            // Определяем направление пакета
+            int direction;
+            if (is_local_ip(src_ip)) {
+                direction = 1; // Исходящий
+            }
+            else if (is_local_ip(dst_ip)) {
+                direction = 0; // Входящий
+            }
+            else {
+                // Пакет не относится к нашему хосту
+                return;
+            }
+
+            uint8_t next_header = ip6_hdr->ip6_nxt;
+            uint16_t src_port = 0;
+            uint16_t dst_port = 0;
+            char proto_str[8] = "other";
+
+            const u_char *transport_header = ip_packet + sizeof(struct ip6_hdr);
+
+            if (next_header == IPPROTO_TCP) {
+                if (header->len < 4 + sizeof(struct ip6_hdr) + sizeof(struct tcphdr)) {
+                    // Пакет слишком короткий для TCP заголовка
+                    return;
+                }
+                struct tcphdr *tcp_hdr = (struct tcphdr*)transport_header;
+                src_port = ntohs(TCP_SRC_PORT(tcp_hdr));
+                dst_port = ntohs(TCP_DST_PORT(tcp_hdr));
+                strcpy(proto_str, "tcp");
+            }
+            else if (next_header == IPPROTO_UDP) {
+                if (header->len < 4 + sizeof(struct ip6_hdr) + sizeof(struct udphdr)) {
+                    // Пакет слишком короткий для UDP заголовка
+                    return;
+                }
+                struct udphdr *udp_hdr = (struct udphdr*)transport_header;
+                src_port = ntohs(UDP_SRC_PORT(udp_hdr));
+                dst_port = ntohs(UDP_DST_PORT(udp_hdr));
+                strcpy(proto_str, "udp");
+            }
+            else if (next_header == IPPROTO_ICMPV6) {
+                strcpy(proto_str, "icmp6");
+            }
+
+            update_connection(src_ip, dst_ip, src_port, dst_port, proto_str, header->len - 4, direction);
+        }
+        else {
+            // Неизвестный семейство адресов
             return;
         }
-        fprintf(stderr, "Направление пакета: %s\n", direction == 0 ? "Входящий" : "Исходящий");
-
-        uint8_t next_header = ip6_hdr->ip6_nxt;
-        uint16_t src_port = 0;
-        uint16_t dst_port = 0;
-        char proto_str[8];
-
-        const u_char *transport_header = packet + ethernet_header_length + sizeof(struct ip6_hdr);
-
-        if (next_header == IPPROTO_TCP) {
-            struct tcphdr *tcp_hdr = (struct tcphdr*)transport_header;
-            src_port = ntohs(TCP_SRC_PORT(tcp_hdr));
-            dst_port = ntohs(TCP_DST_PORT(tcp_hdr));
-            strcpy(proto_str, "tcp");
-            fprintf(stderr, "TCP6 пакет: %s:%d -> %s:%d\n", src_ip, src_port, dst_ip, dst_port);
-        } else if (next_header == IPPROTO_UDP) {
-            struct udphdr *udp_hdr = (struct udphdr*)transport_header;
-            src_port = ntohs(UDP_SRC_PORT(udp_hdr));
-            dst_port = ntohs(UDP_DST_PORT(udp_hdr));
-            strcpy(proto_str, "udp");
-            fprintf(stderr, "UDP6 пакет: %s:%d -> %s:%d\n", src_ip, src_port, dst_ip, dst_port);
-        } else if (next_header == IPPROTO_ICMPV6) {
-            strcpy(proto_str, "icmp6");
-            fprintf(stderr, "ICMPv6 пакет: %s -> %s\n", src_ip, dst_ip);
-        } else {
-            strcpy(proto_str, "other");
-            fprintf(stderr, "Другой протокол IPv6 (%d): %s -> %s\n", next_header, src_ip, dst_ip);
-        }
-
-        update_connection(src_ip, dst_ip, src_port, dst_port, proto_str, header->len, direction);
-
-    } else {
-        // Не IPv4 и не IPv6
-        fprintf(stderr, "Неизвестный Ethernet Type: 0x%04x\n", eth_type);
-        return;
     }
 }
 
@@ -454,7 +627,7 @@ int parse_arguments(int argc, char *argv[], Settings *settings) {
     settings->sort_mode = 'b';
     settings->interval = 1;
 
-    while ((opt = getopt(argc, argv, "i:s:t:")) != -1) {
+    while ((opt = getopt(argc, argv, "i:s:t:d")) != -1) {
         switch (opt) {
             case 'i':
                 settings->interface = optarg;
@@ -474,6 +647,9 @@ int parse_arguments(int argc, char *argv[], Settings *settings) {
                     return -1;
                 }
                 break;
+            case 'd':
+                debug_mode = 1;
+                break;
             default:
                 print_usage();
                 return -1;
@@ -491,8 +667,6 @@ int parse_arguments(int argc, char *argv[], Settings *settings) {
 }
 
 int main(int argc, char *argv[]) {
-    fprintf(stderr, "Запуск программы isa-top\n");
-
     Settings settings;
     if (parse_arguments(argc, argv, &settings) != 0) {
         exit(EXIT_FAILURE);
@@ -503,24 +677,41 @@ int main(int argc, char *argv[]) {
     sort_mode = settings.sort_mode;
     interval = settings.interval;
 
-    fprintf(stderr, "Выбран интерфейс: %s\n", interface);
-    fprintf(stderr, "Режим сортировки: %c\n", sort_mode);
-    fprintf(stderr, "Интервал обновления: %d секунд\n", interval);
+    // Открытие файла для логирования
+    log_file = fopen("isa-top.log", "w");
+    if (log_file == NULL) {
+        perror("Не удалось открыть файл isa-top.log для логирования");
+        exit(EXIT_FAILURE);
+    }
 
+    // Установка обработчика сигнала SIGINT
     signal(SIGINT, handle_sigint);
 
+    // Получение локальных IP-адресов
+    get_local_ips(interface);
+
+    // Инициализация pcap
     char errbuf[PCAP_ERRBUF_SIZE];
-    pcap_t *handle;
 
     handle = pcap_open_live(interface, BUFSIZ, 1, 1000, errbuf);
     if (handle == NULL) {
+        endwin();
         fprintf(stderr, "Не удалось открыть устройство %s: %s\n", interface, errbuf);
+        fclose(log_file);
         return EXIT_FAILURE;
     }
-    fprintf(stderr, "Устройство %s успешно открыто для захвата\n", interface);
 
-    // Получаем локальные IP-адреса
-    get_local_ips(interface);
+    // Установка неблокирующего режима для pcap
+    if (pcap_setnonblock(handle, 1, errbuf) == -1) {
+        endwin();
+        fprintf(stderr, "Ошибка установки неблокирующего режима: %s\n", pcap_geterr(handle));
+        pcap_close(handle);
+        fclose(log_file);
+        return EXIT_FAILURE;
+    }
+
+    // Определение типа связующего уровня
+    linktype = pcap_datalink(handle);
 
     // Инициализация ncurses
     initscr();
@@ -528,23 +719,41 @@ int main(int argc, char *argv[]) {
     noecho();
     curs_set(FALSE);
 
-    fprintf(stderr, "Начало цикла захвата пакетов\n");
+    // Инициализация переменных для отслеживания времени
+    struct timeval last_time, current_time;
+    gettimeofday(&last_time, NULL);
+
     while (!stop) {
-        int ret = pcap_dispatch(handle, -1, packet_handler, NULL);
-        if (ret == -1) {
+        // Проверяем, прошел ли интервал
+        gettimeofday(&current_time, NULL);
+        double elapsed = (current_time.tv_sec - last_time.tv_sec) + (current_time.tv_usec - last_time.tv_usec) / 1e6;
+        if (elapsed >= interval) {
+            display_statistics();
+            last_time = current_time;
+        }
+
+        // Захватываем следующий пакет (неблокирующий)
+        struct pcap_pkthdr *header;
+        const u_char *packet;
+        int ret = pcap_next_ex(handle, &header, &packet);
+        if (ret == 1) {
+            packet_handler(NULL, header, packet);
+        } else if (ret == 0) {
+            // Нет пакетов в буфере, спим немного
+            fprintf(log_file, "Нет пакетов в буфере\n");
+            usleep(1000); // Спим 1 мс
+        } else if (ret == -1) {
             fprintf(stderr, "Ошибка при захвате пакетов: %s\n", pcap_geterr(handle));
             break;
-        } else if (ret == 0) {
-            fprintf(stderr, "Нет пакетов для обработки\n");
-        } else {
-            fprintf(stderr, "Обработано %d пакетов\n", ret);
+        } else if (ret == -2) {
+            // pcap_breakloop() был вызван
+            break;
         }
-        display_statistics();
-        sleep(interval);
     }
 
-    fprintf(stderr, "Завершение работы программы\n");
+    // Завершение работы
     pcap_close(handle);
     endwin();
+    fclose(log_file);
     return EXIT_SUCCESS;
 }
