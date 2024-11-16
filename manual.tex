@@ -1,0 +1,259 @@
+\documentclass[12pt]{extarticle}
+\usepackage{graphicx}
+\usepackage{times}
+\usepackage[english]{babel}
+\usepackage{hyperref}
+\usepackage[left=20mm,text={170mm,240mm},top=30mm,bottom=20mm, right=15mm]{geometry}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{csquotes}
+
+% Hyperlink color setup with citation numbers in black
+\hypersetup{
+    colorlinks=true,
+    urlcolor=blue,
+    linkcolor=black,
+    citecolor=black, % Set citation color to black
+    pdfborderstyle={/S/U/W 1}
+}
+
+% Redefine bibliography labels to include a colon after the number
+\makeatletter
+\renewcommand\@biblabel[1]{[#1]:}
+\makeatother
+
+\begin{document}
+\begin{titlepage}
+\begin{center}
+   \includegraphics[width=.9 \linewidth]{img/FIT-logo-CZ.pdf}
+    \vspace{\stretch{0.382}}
+
+    {\Huge ISA 2024/2025} \\ \vspace{1em}
+    {\LARGE Network Traffic Statistics Application (isa-top)} \\
+    \vspace{\stretch{0.618}}
+\end{center}
+ {\Large \today}
+ \hfill
+ \begin{minipage}[t]{3\textwidth}
+   \begin{tabbing}
+   \hspace*{5.5cm}\=\hspace*{2cm} \kill
+    \Large{Maksim Samusevich} \> \Large{\textbf{xsamus00}}\\
+   \end{tabbing}
+ \end{minipage}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+\listoffigures
+
+\newpage
+
+\section{Introduction}
+
+This document describes the implementation of the `isa-top` application designed to monitor real-time network traffic statistics. The tool listens to a specified network interface, captures packets using the \texttt{libpcap} library \cite{libpcap}, and calculates transmission speeds for each connection. It displays the results in the terminal using a \texttt{ncurses}-based interface \cite{ncurses}.
+
+The application provides key insights into the network activity, such as source and destination IP addresses, protocol type, and transfer speeds in bytes/packets per second. By default, it updates statistics every second and displays the top 10 most active connections.
+
+\section{Code Implementation}
+
+This section provides a detailed explanation of the key functions implemented in the \texttt{isa-top} application. Each function description includes its purpose, input parameters, output, and how it contributes to the overall functionality of the program.
+
+\subsection{Main Functionality}
+
+The main function, \texttt{int main(int argc, char *argv[])}, is the starting point of the application. Its primary role is to initialize the environment, process user inputs, and manage the packet capturing loop.
+
+The function starts by parsing the command-line arguments with \texttt{parse\_arguments()} \cite{beej}, ensuring that essential parameters such as the network interface are provided. Afterward, it retrieves the local IP addresses associated with the specified interface using \texttt{get\_local\_ips()} \cite{linuxman}, which prepares the application to identify incoming and outgoing traffic.
+
+To enable real-time packet capturing, \texttt{pcap\_open\_live()} \cite{libpcap} is called to bind the application to the chosen interface. For a dynamic and user-friendly display, the \texttt{ncurses} library \cite{ncurses} is initialized, allowing for periodic updates of connection statistics. The main loop then enters a cycle of capturing packets via \texttt{pcap\_next\_ex()} \cite{libpcap} and processing them through \texttt{packet\_handler()}.
+
+The program's lifecycle is managed by a \texttt{SIGINT} handler \cite{linuxman}, ensuring clean termination. Upon exiting, resources such as \texttt{ncurses} windows and the log file are properly closed.
+
+\subsection{Command-Line Argument Parsing}
+
+The function \texttt{int parse\_arguments(int argc, char *argv[], Settings *settings)} is responsible for parsing and validating user-provided arguments. It ensures that the required network interface is specified and allows optional configuration of sorting mode (\texttt{-s}), update interval (\texttt{-t}), and logging (\texttt{-d}). If invalid inputs are detected, the function outputs usage instructions and terminates the program.
+
+This function makes use of the \texttt{getopt()} library \cite{linuxman}, which simplifies the process of parsing arguments. Valid arguments are stored in a \texttt{Settings} structure, which is later used to configure the application.
+
+\subsection{Packet Capture and Processing}
+
+The \texttt{packet\_handler()} function is the core of the application's functionality. It processes each captured packet to extract vital information such as source and destination IP addresses, port numbers, protocol type, and packet size.
+
+The function supports both IPv4 and IPv6 protocols, handling Ethernet and loopback link types. For each packet, it determines whether it is incoming or outgoing by comparing its IP addresses against the list of local IPs. This directionality is crucial for categorizing the packet as transmitted (\texttt{Tx}) or received (\texttt{Rx}).
+
+Based on the extracted data, the function invokes \texttt{update\_connection()} to update or create a connection entry in the global \texttt{connections} array. By modularizing these operations, the application maintains clean and efficient code.
+
+\subsection{Connection Management}
+
+Managing active connections is a central aspect of the \texttt{isa-top} application. The \texttt{update\_connection()} function is responsible for adding new connections or updating statistics for existing ones.
+
+To ensure consistent and direction-agnostic connection tracking, the function uses a \texttt{ConnectionKey} structure. The \texttt{find\_connection()} function searches for an existing connection matching the key \cite{beej}. If no match is found, a new entry is created, provided the maximum number of connections has not been exceeded.
+
+Once a connection is identified or created, \texttt{update\_connection()} updates its statistics, including byte and packet counts for both transmission and reception.
+
+\subsection{Displaying Statistics}
+
+The \texttt{display\_statistics()} function provides real-time feedback to the user by rendering the connection data in a tabular format. Leveraging the \texttt{ncurses} library \cite{ncurses}, it clears and redraws the terminal interface with updated statistics.
+
+The function sorts connections based on the selected mode (bytes or packets) using \texttt{qsort()} \cite{linuxman}. It then formats and displays the top 10 most active connections, including their source and destination, protocol type, and bandwidth metrics.
+
+To ensure accuracy, counters for each connection are reset after being displayed, allowing for the next cycle of updates to begin afresh.
+
+\subsection{Utility Functions}
+
+Several utility functions enhance the application's modularity and maintainability:
+
+\textbf{\texttt{get\_local\_ips(char *interface):}} Retrieves all local IP addresses for the specified interface, supporting both IPv4 and IPv6. These addresses are used to determine the directionality of traffic \cite{linuxman}.
+
+\textbf{\texttt{is\_local\_ip(char *ip):}} Checks if a given IP address matches any of the local addresses \cite{beej}.
+
+\textbf{\texttt{format\_bandwidth(double bytes, double interval, char *output, char *unit\_str):}} Converts raw byte counts into human-readable bandwidth values, adjusting units dynamically (e.g., \texttt{k}, \texttt{M}, \texttt{G}) \cite{linuxman}.
+
+\subsection{Logging}
+
+For debugging and monitoring purposes, the application supports logging of packet details and connection statistics. The \texttt{-d} option implemented in the command line enables logging \cite{libpcap}. The log file is created in the current directory with the name \texttt{isa-top.log}.
+
+\section{Usage}
+
+\subsection{Compilation}
+To compile the application, run the following command:
+\begin{verbatim}
+make
+\end{verbatim}
+This will generate the executable file \texttt{isa-top}.
+
+\subsection{Running the Application}
+The application can be run with the following syntax:
+\begin{verbatim}
+./isa-top -i <interface> [-s b|p] [-t interval] [-d]
+\end{verbatim}
+
+\subsubsection*{Options:}
+\begin{itemize}
+    \item \texttt{-i <interface>} — Specifies the network interface to monitor (required).
+    \item \texttt{-s b|p} — Sorting mode:
+    \begin{itemize}
+        \item \texttt{b} — Sort by transferred bytes (default).
+        \item \texttt{p} — Sort by transferred packets.
+    \end{itemize}
+    \item \texttt{-t interval} — Update interval in seconds (optional, default is 1 second).
+    \item \texttt{-d} — Enable logging.
+\end{itemize}
+
+\subsection{Example Commands}
+\begin{itemize}
+    \item Monitor traffic on the \texttt{eth0} (for Linux) or on the \texttt{en0} (for macOS) interface with default settings:
+    \begin{verbatim}
+    ./isa-top -i eth0
+    \end{verbatim}
+
+    \item Monitor the \texttt{eth0} interface and sort results by packets:
+    \begin{verbatim}
+    ./isa-top -i eth0 -s p
+    \end{verbatim}
+
+\end{itemize}
+
+\section{Testing}
+
+To validate the \texttt{isa-top} application, several scenarios were created and tested on a macOS Sonoma environment. Each test scenario demonstrates the application’s ability to monitor various types of network traffic, including TCP, UDP, and high-bandwidth traffic from a speed test website.
+
+\subsection{Testing Scenarios}
+
+\subsubsection{TCP Traffic Test Using \texttt{iperf}}
+
+This test demonstrates the \texttt{isa-top} application’s ability to monitor TCP traffic on the loopback interface using \texttt{iperf} \cite{iperf}. It validates real-time capture of TCP connections, including source and destination IPs, ports, and bandwidth usage.
+
+\begin{enumerate}
+    \item Start an \texttt{iperf} server in one terminal:
+    \begin{verbatim}
+    iperf -s
+    \end{verbatim}
+    \item In another terminal, run the \texttt{iperf} client to generate TCP traffic:
+    \begin{verbatim}
+    iperf -c 127.0.0.1
+    \end{verbatim}
+    \item Launch the \texttt{isa-top} application to monitor the loopback interface:
+    \begin{verbatim}
+    ./isa-top -i lo0 -d
+    \end{verbatim}
+\end{enumerate}
+
+\textbf{Results:} The \texttt{isa-top} application accurately displayed all active TCP connections, including bandwidth usage and connection details. The data matched the captured packets observed in Wireshark \cite{libpcap}.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\linewidth]{ipref.png}
+    \caption{TCP Traffic Captured by \texttt{isa-top}}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\linewidth]{ipref2.png}
+    \caption{Wireshark Capturing TCP Traffic}
+\end{figure}
+
+\subsubsection{UDP Traffic Testing Using \texttt{iperf}}
+
+This test evaluates the \texttt{isa-top} application’s ability to monitor UDP traffic on the loopback interface. \texttt{iperf} was used to simulate high-bandwidth UDP traffic \cite{iperf}.
+
+\begin{enumerate}
+    \item Start the \texttt{isa-top} application on the loopback interface:
+    \begin{verbatim}
+    ./isa-top -i lo0 -d
+    \end{verbatim}
+    \item Launch the \texttt{iperf} server in a second terminal:
+    \begin{verbatim}
+    iperf -s -u
+    \end{verbatim}
+    \item In the third terminal, send UDP traffic to the server:
+    \begin{verbatim}
+    iperf -u -c 127.0.0.1 -b 10M
+    \end{verbatim}
+\end{enumerate}
+
+\textbf{Results:} The \texttt{isa-top} application successfully captured the UDP traffic, displaying source and destination IPs, ports, protocol type, and bandwidth statistics. The results matched Wireshark captures \cite{libpcap}.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\linewidth]{udp.png}
+    \caption{UDP Traffic Visualization in \texttt{isa-top}}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\linewidth]{udp2.png}
+    \caption{UDP Traffic Captured in Wireshark}
+\end{figure}
+
+\subsubsection{Testing with Speed Test Website}
+
+This test demonstrates the \texttt{isa-top} application’s ability to monitor high-bandwidth traffic during a speed test using services such as \href{https://www.speedtest.net}{speedtest.net} \cite{speedtest}.
+
+\begin{enumerate}
+    \item Start the \texttt{isa-top} application on the \texttt{en0} interface:
+    \begin{verbatim}
+    ./isa-top -i en0 -d
+    \end{verbatim}
+    \item Open a browser and navigate to a speed test website (e.g., \href{https://www.speedtest.net}{speedtest.net}).
+    \item Start the speed test and observe the connections displayed by \texttt{isa-top}.
+\end{enumerate}
+
+\textbf{Results:} During the test, \texttt{isa-top} displayed high Rx (received) rates during the download phase and high Tx (transmitted) rates during the upload phase, providing real-time statistics for all active connections.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.7\linewidth]{speedtest.png}
+    \caption{\texttt{isa-top} Monitoring High-Bandwidth Traffic During a Speed Test}
+\end{figure}
+
+\section{References}
+\begin{thebibliography}{9}
+    \bibitem{libpcap} Libpcap Documentation [online]. 2024 [cit. 2024-04-01]. Available at: \url{https://www.tcpdump.org/manpages/pcap.3pcap.html}
+    \bibitem{ncurses} Ncurses Documentation [online]. 2024 [cit. 2024-04-01]. Available at: \url{https://invisible-island.net/ncurses/man/ncurses.3x.html}
+    \bibitem{beej} Beej. Beej's Guide to Network Programming: Using Internet Sockets [online]. 2023 [cit. 2024-04-01]. Available at: \url{https://beej.us/guide/bgnet/}
+    \bibitem{linuxman} Linux Man Pages [online]. 2024 [cit. 2024-04-01]. Available at: \url{https://man7.org/linux/man-pages/}
+    \bibitem{iperf} Iperf Documentation [online]. 2024 [cit. 2024-04-01]. Available at: \url{https://iperf.fr/}
+    \bibitem{speedtest} Speedtest.net [online]. 2024 [cit. 2024-04-01]. Available at: \url{https://www.speedtest.net}
+\end{thebibliography}
+
+\end{document}

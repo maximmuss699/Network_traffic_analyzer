@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>       // For getopt()
+#include <unistd.h>       
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
@@ -53,6 +53,13 @@ typedef struct {
     uint64_t tx_packets;
 } Connection;
 
+void sleep_ms(long milliseconds) {
+    struct timespec ts;
+    ts.tv_sec = milliseconds / 1000;
+    ts.tv_nsec = (milliseconds % 1000) * 1000000L;
+    nanosleep(&ts, NULL);
+}
+
 Connection connections[MAX_CONNECTIONS];
 int connection_count = 0;
 
@@ -91,7 +98,7 @@ void print_usage() {
 }
 
 // SIGINT signal handler
-void handle_sigint(int sig) {
+void handle_sigint() {
     pcap_breakloop(handle);
     stop = 1;
 }
@@ -400,7 +407,7 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
 
     if (linktype == DLT_EN10MB) { // Ethernet
         int ethernet_header_length = 14; // Standard Ethernet header length
-        if (header->len < ethernet_header_length) {
+        if ((int)header->len < ethernet_header_length) {
             // Packet too short for Ethernet header
             return;
         }
@@ -779,7 +786,7 @@ int main(int argc, char *argv[]) {
             // No packets in buffer, sleep a bit
             if (debug_mode)
                 fprintf(log_file, "No packets in buffer\n");
-            usleep(1000); // Sleep 1 ms
+            sleep_ms(1);
         } else if (ret == -1) {
             fprintf(stderr, "Error capturing packets: %s\n", pcap_geterr(handle));
             break;
