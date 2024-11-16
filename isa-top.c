@@ -152,14 +152,14 @@ int is_local_ip(char *ip) {
 
     for (int i = 0; i < local_ip_count; i++) {
         // Copy local IP and remove scope identifier if present
-        strncpy(ip_copy, local_ips[i], INET6_ADDRSTRLEN);
+        snprintf(ip_copy, sizeof(ip_copy), "%s", local_ips[i]);
         char *percent = strchr(ip_copy, '%');
         if (percent) {
             *percent = '\0';
         }
 
         // Copy packet IP and remove scope identifier if present
-        strncpy(packet_ip_copy, ip, INET6_ADDRSTRLEN);
+        snprintf(packet_ip_copy, sizeof(packet_ip_copy), "%s", ip);
         percent = strchr(packet_ip_copy, '%');
         if (percent) {
             *percent = '\0';
@@ -344,21 +344,25 @@ void display_statistics() {
 
     // Display top 10 connections
     for (int i = 0; i < connection_count && i < 10; i++) {
-        char src[50], dst[50], rx_bw[16], tx_bw[16];
+        char src[100], dst[100], rx_bw[16], tx_bw[16];
         char rx_pps_str[16], tx_pps_str[16];
         char rx_unit[4], tx_unit[4], rx_pps_unit[4], tx_pps_unit[4];
 
         // Format source and destination IP:port
         if (is_ipv6_address(connections[i].ip1)) {
-            snprintf(src, 50, "[%s]:%d", connections[i].ip1, connections[i].port1);
+            snprintf(src, sizeof(src), "%s:%d", connections[i].ip1, connections[i].port1);
+
         } else {
-            snprintf(src, 50, "%s:%d", connections[i].ip1, connections[i].port1);
+            snprintf(src, sizeof(src), "%s:%d", connections[i].ip1, connections[i].port1);
+
         }
 
         if (is_ipv6_address(connections[i].ip2)) {
-            snprintf(dst, 50, "[%s]:%d", connections[i].ip2, connections[i].port2);
+           snprintf(dst, sizeof(dst), "%s:%d", connections[i].ip2, connections[i].port2);
+
         } else {
-            snprintf(dst, 50, "%s:%d", connections[i].ip2, connections[i].port2);
+           snprintf(dst, sizeof(dst), "%s:%d", connections[i].ip2, connections[i].port2);
+
         }
 
         double time_diff = (double)interval;
@@ -404,6 +408,8 @@ void display_statistics() {
 void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
     if (debug_mode)
         fprintf(log_file, "Captured packet length %u bytes\n", header->len);
+
+     (void)args; // Unused 
 
     if (linktype == DLT_EN10MB) { // Ethernet
         int ethernet_header_length = 14; // Standard Ethernet header length
