@@ -1,17 +1,18 @@
 .TH ISA-TOP 1 "November 16, 2024" "Version 1.0" "User Manual ISA-TOP"
+
 .SH NAME
 isa-top \- Network Traffic Statistics Monitoring Tool
 
 .SH SYNOPSIS
 .B isa-top
 .RB \-i interface
-[\fB\-s\fP \fBb\fP \| \fBp\fP]
-[\fB\-t\fP interval]
-[\fB\-d\fP]
+.RB \-s " \fBb\fP \| \fBp\fP "
+.RB \-t interval
+.RB \-d
 
 .SH DESCRIPTION
 .B isa-top
-is a console-based application designed to monitor real-time network traffic statistics. Developed by Maksim Samusevich for the course ISA - Network Applications and Network Management during the academic year 2024/2025 under the supervision of Ing. Matěj Grégr, Ph.D., this tool captures network packets on a specified interface using the
+is a console-based application designed to monitor real-time network traffic statistics, this tool captures network packets on a specified interface using the
 .B libpcap
 library and calculates transmission speeds for each active connection. The statistics are dynamically displayed in the terminal using the
 .B ncurses
@@ -31,11 +32,11 @@ Each captured packet is processed to extract relevant information such as source
 To ensure that the application does not consume excessive CPU resources, especially when there is low or no network traffic, 
 .B isa-top
 incorporates the
-.B usleep()
+.B sleep_ms()
 function within its main loop. When
 .B pcap_next_ex()
 returns without capturing a packet (indicated by a return value of 0), the program invokes
-.B usleep(1000)
+.B sleep_ms(1)
 to pause execution for 1 millisecond. This brief sleep period prevents the application from entering a tight loop that would otherwise lead to high CPU utilization.
 
 By introducing this short delay, 
@@ -56,9 +57,9 @@ Specifies the network interface to monitor (required). Examples of interfaces in
 .TP
 \fB\-s\fP \fBb\fP \| \fBp\fP
 Determines the sorting mode for displaying connections:
-.IP \(bu 4
+.IP \(bu
 \fBb\fP — Sort by the number of transferred bytes (default).
-.IP \(bu 4
+.IP \(bu
 \fBp\fP — Sort by the number of transferred packets.
 
 .TP
@@ -88,6 +89,7 @@ interface, sort by packets, and set the update interval to 2 seconds:
 
 .SH OUTPUT FORMAT
 The output is displayed in a tabular format with the following columns:
+
 .IP
 .B Src IP:port
 .IP
@@ -117,15 +119,20 @@ shows the received data rate in bytes per second (B/s) and packets per second (P
 shows the transmitted data rate in bytes per second (B/s) and packets per second (P/s).
 
 .SH AUTHOR
-Maksim Samusevich
+Maksim Samusevich (login: xsamus00)
 
 .SH SEE ALSO
 .B libpcap(3),
 .B ncurses(3),
 .B iftop(1)
 
-.SH BUGS
-Report any bugs or issues to the author at [your-email@example.com].
 
 .SH COPYRIGHT
 This is free software; see the source for copying conditions. There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+.SH FILES
+.B isa-top.c
+.B isa-top.1
+.B README.md
+.B Makefile
+.B isa-top.log

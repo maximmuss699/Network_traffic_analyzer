@@ -1,4 +1,7 @@
-// isa-top.c
+/**
+ * Author: Maksim Samusevich
+ * Login: xsamus00
+ **/
 
 #include <pcap.h>
 #include <stdio.h>
@@ -53,6 +56,7 @@ typedef struct {
     uint64_t tx_packets;
 } Connection;
 
+// Sleep function to reduce CPU usage
 void sleep_ms(long milliseconds) {
     struct timespec ts;
     ts.tv_sec = milliseconds / 1000;
@@ -69,6 +73,7 @@ char sort_mode = 'b';
 int interval = 1;
 int debug_mode = 0;
 
+// Global variables for pcap
 int linktype = -1;
 
 volatile sig_atomic_t stop = 0;
@@ -241,6 +246,7 @@ void update_connection(char *src_ip, char *dst_ip, uint16_t src_port, uint16_t d
 
     strcpy(key.protocol, protocol);
 
+
     int index = find_connection(&key);
     if (index == -1) {
         if (connection_count < MAX_CONNECTIONS) {
@@ -273,6 +279,7 @@ void update_connection(char *src_ip, char *dst_ip, uint16_t src_port, uint16_t d
     }
 }
 
+// Format a value with units
 void format_value(double value, char *output, char *unit_str) {
     const char *units[] = {"", "k", "M", "G"};
     int unit = 0;
@@ -284,12 +291,13 @@ void format_value(double value, char *output, char *unit_str) {
     snprintf(output, 16, "%.1f", value);
 }
 
+// Modified function to display bandwidth in bits per second
 void format_bandwidth(double bytes, double interval, char *output, char *unit_str) {
-    double bps = bytes / interval;
-    const char *units[] = {"B", "k", "M", "G"};
+    double bps = (bytes * 8) / interval; // Convert bytes to bits
+    const char *units[] = {"b", "k", "M", "G"}; // Bits per second
     int unit = 0;
-    while (bps >= 1024 && unit < 3) {
-        bps /= 1024;
+    while (bps >= 1000 && unit < 3) {
+        bps /= 1000;
         unit++;
     }
     strcpy(unit_str, units[unit]);
@@ -329,7 +337,7 @@ void display_statistics() {
 
     // Print headers
     mvprintw(0, 0, "Src IP:port                         Dst IP:port                      Proto   Rx        Tx");
-    mvprintw(1, 0, "                                                                               b/s p/s     b/s p/s");
+    mvprintw(1, 0, "                                                                               bps p/s     bps p/s");
 
     // Sort connections
     if (sort_mode == 'b') {
@@ -349,26 +357,13 @@ void display_statistics() {
         char rx_unit[4], tx_unit[4], rx_pps_unit[4], tx_pps_unit[4];
 
         // Format source and destination IP:port
-        if (is_ipv6_address(connections[i].ip1)) {
-            snprintf(src, sizeof(src), "%s:%d", connections[i].ip1, connections[i].port1);
-
-        } else {
-            snprintf(src, sizeof(src), "%s:%d", connections[i].ip1, connections[i].port1);
-
-        }
-
-        if (is_ipv6_address(connections[i].ip2)) {
-           snprintf(dst, sizeof(dst), "%s:%d", connections[i].ip2, connections[i].port2);
-
-        } else {
-           snprintf(dst, sizeof(dst), "%s:%d", connections[i].ip2, connections[i].port2);
-
-        }
+        snprintf(src, sizeof(src), "%s:%d", connections[i].ip1, connections[i].port1);
+        snprintf(dst, sizeof(dst), "%s:%d", connections[i].ip2, connections[i].port2);
 
         double time_diff = (double)interval;
         if (time_diff == 0) time_diff = 1.0;
 
-        // Format bandwidth
+        // Format bandwidth in bits per second
         format_bandwidth(connections[i].rx_bytes, time_diff, rx_bw, rx_unit);
         format_bandwidth(connections[i].tx_bytes, time_diff, tx_bw, tx_unit);
 
@@ -381,7 +376,7 @@ void display_statistics() {
         format_value(tx_pps, tx_pps_str, tx_pps_unit);
 
         // Format the output string with alignment and units
-        mvprintw(i + 2, 0, "%-32s %-32s %-6s %6s%-1s %4s%-1s %6s%-1s %4s%-1s",
+        mvprintw(i + 2, 0, "%-32s %-32s %-6s %6s%-2s %4s%-1s %6s%-2s %4s%-1s",
                  src, dst, connections[i].protocol,
                  rx_bw, rx_unit, rx_pps_str, rx_pps_unit,
                  tx_bw, tx_unit, tx_pps_str, tx_pps_unit);
