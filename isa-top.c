@@ -43,7 +43,8 @@
 
 char local_ips[MAX_IP_ADDRESSES][INET6_ADDRSTRLEN];
 int local_ip_count = 0;
-
+ 
+// Connection structure for storing statistics
 typedef struct {
     char ip1[INET6_ADDRSTRLEN];
     char ip2[INET6_ADDRSTRLEN];
@@ -63,6 +64,7 @@ void sleep_ms(long milliseconds) {
     ts.tv_nsec = (milliseconds % 1000) * 1000000L;
     nanosleep(&ts, NULL);
 }
+
 
 Connection connections[MAX_CONNECTIONS];
 int connection_count = 0;
@@ -336,8 +338,8 @@ void display_statistics() {
     clear();
 
     // Print headers
-    mvprintw(0, 0, "Src IP:port                         Dst IP:port                      Proto   Rx        Tx");
-    mvprintw(1, 0, "                                                                               bps p/s     bps p/s");
+    mvprintw(0, 0, "Src IP:port                          Dst IP:port                     Proto             Rx         Tx");
+    mvprintw(1, 0, "                                                                                                  b/s p/s     b/s p/s");
 
     // Sort connections
     if (sort_mode == 'b') {
@@ -350,42 +352,55 @@ void display_statistics() {
             fprintf(log_file, "Connections sorted by packets\n");
     }
 
-    // Display top 10 connections
-    for (int i = 0; i < connection_count && i < 10; i++) {
+    int displayed_connections = 0;
+
+    // Display connections with activity
+    for (int i = 0; i < connection_count && displayed_connections < 10; i++) {
+        // Check if the connection had any activity
+        if (connections[i].rx_bytes == 0 && connections[i].tx_bytes == 0 &&
+            connections[i].rx_packets == 0 && connections[i].tx_packets == 0) {
+            continue; // Skip inactive connections
+        }
+
         char src[100], dst[100], rx_bw[16], tx_bw[16];
         char rx_pps_str[16], tx_pps_str[16];
-        char rx_unit[4], tx_unit[4], rx_pps_unit[4], tx_pps_unit[4];
+        char rx_unit[4], tx_unit[4];
 
         // Format source and destination IP:port
-        snprintf(src, sizeof(src), "%s:%d", connections[i].ip1, connections[i].port1);
-        snprintf(dst, sizeof(dst), "%s:%d", connections[i].ip2, connections[i].port2);
+        if (is_ipv6_address(connections[i].ip1)) {
+            snprintf(src, sizeof(src), "[%s]:%d", connections[i].ip1, connections[i].port1);
+        } else {
+            snprintf(src, sizeof(src), "%s:%d", connections[i].ip1, connections[i].port1);
+        }
+
+        if (is_ipv6_address(connections[i].ip2)) {
+            snprintf(dst, sizeof(dst), "[%s]:%d", connections[i].ip2, connections[i].port2);
+        } else {
+            snprintf(dst, sizeof(dst), "%s:%d", connections[i].ip2, connections[i].port2);
+        }
 
         double time_diff = (double)interval;
         if (time_diff == 0) time_diff = 1.0;
 
-        // Format bandwidth in bits per second
+        // Format bandwidth (convert to bps from bytes)
         format_bandwidth(connections[i].rx_bytes, time_diff, rx_bw, rx_unit);
         format_bandwidth(connections[i].tx_bytes, time_diff, tx_bw, tx_unit);
 
-        // Calculate packets per second
-        double rx_pps = connections[i].rx_packets / time_diff;
-        double tx_pps = connections[i].tx_packets / time_diff;
-
         // Format packets per second
-        format_value(rx_pps, rx_pps_str, rx_pps_unit);
-        format_value(tx_pps, tx_pps_str, tx_pps_unit);
+        snprintf(rx_pps_str, sizeof(rx_pps_str), "%.1f", connections[i].rx_packets / time_diff);
+        snprintf(tx_pps_str, sizeof(tx_pps_str), "%.1f", connections[i].tx_packets / time_diff);
 
-        // Format the output string with alignment and units
-        mvprintw(i + 2, 0, "%-32s %-32s %-6s %6s%-2s %4s%-1s %6s%-2s %4s%-1s",
+        // Print connection details with alignment
+        mvprintw(displayed_connections + 2, 0, "%-35s %-30s %-7s %6s%-1s %6s %6s%-1s %6s",
                  src, dst, connections[i].protocol,
-                 rx_bw, rx_unit, rx_pps_str, rx_pps_unit,
-                 tx_bw, tx_unit, tx_pps_str, tx_pps_unit);
+                 rx_bw, rx_unit, rx_pps_str,
+                 tx_bw, tx_unit, tx_pps_str);
 
         if (debug_mode) {
-            fprintf(log_file, "Connection %d: %s <-> %s, Protocol: %s, Rx: %s%s (%s%s p/s), Tx: %s%s (%s%s p/s)\n",
+            fprintf(log_file, "Connection %d: %s <-> %s, Protocol: %s, Rx: %s%s (%s p/s), Tx: %s%s (%s p/s)\n",
                     i, src, dst, connections[i].protocol,
-                    rx_bw, rx_unit, rx_pps_str, rx_pps_unit,
-                    tx_bw, tx_unit, tx_pps_str, tx_pps_unit);
+                    rx_bw, rx_unit, rx_pps_str,
+                    tx_bw, tx_unit, tx_pps_str);
         }
 
         // Reset counters after displaying
@@ -393,11 +408,14 @@ void display_statistics() {
         connections[i].tx_bytes = 0;
         connections[i].rx_packets = 0;
         connections[i].tx_packets = 0;
+
+        displayed_connections++;
     }
 
     // Refresh the screen
     refresh();
 }
+
 
 // Packet handler for captured packets
 void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
