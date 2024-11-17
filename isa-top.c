@@ -1,101 +1,41 @@
+// isa-top.c
+
 /**
  * Author: Maksim Samusevich
  * Login: xsamus00
  **/
 
-#include <pcap.h>
-#include <stdio.h>
+#include "isa-top.h"
 #include <stdlib.h>
-#include <string.h>
-#include <unistd.h>       
-#include <netinet/in.h>
-#include <netinet/ip.h>
-#include <netinet/ip6.h>
-#include <netinet/tcp.h>
-#include <netinet/udp.h>
-#include <arpa/inet.h>
-#include <ncurses.h>
-#include <signal.h>
-#include <time.h>
-#include <ifaddrs.h>
-#include <net/if.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netdb.h>
 #include <sys/time.h>
-
-#if defined(__APPLE__) || defined(__MACH__)
-// macOS
-#define TCP_SRC_PORT(th) ((th)->th_sport)
-#define TCP_DST_PORT(th) ((th)->th_dport)
-#define UDP_SRC_PORT(uh) ((uh)->uh_sport)
-#define UDP_DST_PORT(uh) ((uh)->uh_dport)
-#else
-// Linux and others
-#define TCP_SRC_PORT(th) ((th)->source)
-#define TCP_DST_PORT(th) ((th)->dest)
-#define UDP_SRC_PORT(uh) ((uh)->source)
-#define UDP_DST_PORT(uh) ((uh)->dest)
-#endif
-
-#define MAX_CONNECTIONS 1000
-#define MAX_IP_ADDRESSES 10
-
-char local_ips[MAX_IP_ADDRESSES][INET6_ADDRSTRLEN];
-int local_ip_count = 0;
- 
-// Connection structure for storing statistics
-typedef struct {
-    char ip1[INET6_ADDRSTRLEN];
-    char ip2[INET6_ADDRSTRLEN];
-    uint16_t port1;
-    uint16_t port2;
-    char protocol[8];
-    uint64_t rx_bytes;
-    uint64_t tx_bytes;
-    uint64_t rx_packets;
-    uint64_t tx_packets;
-} Connection;
-
-// Sleep function to reduce CPU usage
-void sleep_ms(long milliseconds) {
-    struct timespec ts;
-    ts.tv_sec = milliseconds / 1000;
-    ts.tv_nsec = (milliseconds % 1000) * 1000000L;
-    nanosleep(&ts, NULL);
-}
+#include <string.h>
 
 
 Connection connections[MAX_CONNECTIONS];
 int connection_count = 0;
 
-// Global variables for settings
+
 char *interface = NULL;
 char sort_mode = 'b';
 int interval = 1;
 int debug_mode = 0;
 
-// Global variables for pcap
+
 int linktype = -1;
+pcap_t *handle = NULL;
+
+
+FILE *log_file = NULL;
 
 volatile sig_atomic_t stop = 0;
 
-pcap_t *handle = NULL;
+// Signal handler for SIGINT
+void handle_sigint() {
+    pcap_breakloop(handle);
+    stop = 1;
+}
 
-// Variable for log file
-FILE *log_file = NULL;
-
-// Structure for storing settings
-typedef struct {
-    char *interface;
-    char sort_mode;
-    int interval;
-} Settings;
-
-// Prototype for argument parsing function
-int parse_arguments(int argc, char *argv[], Settings *settings);
-
-// Function to print usage information
+// Function to print usage
 void print_usage() {
     fprintf(stderr, "Usage: isa-top -i <interface> [-s b|p] [-t interval] [-d]\n");
     fprintf(stderr, "  -i <interface> : Specify the network interface to monitor (required)\n");
@@ -104,136 +44,400 @@ void print_usage() {
     fprintf(stderr, "  -d             : Enable debug mode\n");
 }
 
-// SIGINT signal handler
-void handle_sigint() {
-    pcap_breakloop(handle);
-    stop = 1;
+// Function to parse command line arguments
+int parse_arguments(int argc, char *argv[]) {
+    int opt;
+    interface = NULL;
+    sort_mode = 'b';
+    interval = 1;
+
+    while ((opt = getopt(argc, argv, "i:s:t:d")) != -1) {
+        switch (opt) {
+            case 'i':
+                interface = optarg;
+                break;
+            case 's':
+                if (optarg[0] == 'b' || optarg[0] == 'p') {
+                    sort_mode = optarg[0];
+                } else {
+                    fprintf(stderr, "Invalid sort mode: %c\n", optarg[0]);
+                    return -1;
+                }
+                break;
+            case 't':
+                interval = atoi(optarg);
+                if (interval <= 0) {
+                    fprintf(stderr, "Interval must be a positive number\n");
+                    return -1;
+                }
+                break;
+            case 'd':
+                debug_mode = 1;
+                break;
+            default:
+                print_usage();
+                return -1;
+        }
+    }
+
+    if (interface == NULL) {
+        fprintf(stderr, "Error: Network interface not specified\n");
+        print_usage();
+        return -1;
+    }
+
+    return 0;
 }
 
-// Retrieve local IP addresses of the specified interface
-void get_local_ips(char *interface) {
-    struct ifaddrs *ifaddr, *ifa;
-    int family;
-    char host[INET6_ADDRSTRLEN];
-
-    if (getifaddrs(&ifaddr) == -1) {
-        perror("getifaddrs");
+// Main function
+int main(int argc, char *argv[]) {
+    if (parse_arguments(argc, argv) != 0) {
         exit(EXIT_FAILURE);
     }
 
-    local_ip_count = 0;
+    // Open log file if debug mode is enabled
+    if (debug_mode) {
+        log_file = fopen("isa-top.log", "w");
+        if (log_file == NULL) {
+            perror("Failed to open isa-top.log for logging");
+            exit(EXIT_FAILURE);
+        }
+    }
 
-    for (ifa = ifaddr; ifa != NULL && local_ip_count < MAX_IP_ADDRESSES; ifa = ifa->ifa_next) {
-        if (ifa->ifa_addr == NULL)
-            continue;
+   
+    signal(SIGINT, handle_sigint);
 
-        // Check only the specified interface
-        if (strcmp(ifa->ifa_name, interface) != 0)
-            continue;
+    // Get local IP addresses for the specified interface
+    get_local_ips(interface);
 
-        family = ifa->ifa_addr->sa_family;
+    // Initialize pcap
+    char errbuf[PCAP_ERRBUF_SIZE];
 
-        if (family == AF_INET || family == AF_INET6) {
-            int s = getnameinfo(ifa->ifa_addr,
-                                (family == AF_INET) ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6),
-                                host, sizeof(host),
-                                NULL, 0, NI_NUMERICHOST);
-            if (s == 0) {
-                strcpy(local_ips[local_ip_count], host);
-                if (debug_mode)
-                    fprintf(log_file, "Local IP address (%s): %s\n", interface, host);
-                local_ip_count++;
-            } else {
-                fprintf(stderr, "getnameinfo() failed: %s\n", gai_strerror(s));
+    handle = pcap_open_live(interface, BUFSIZ, 1, 1000, errbuf);
+    if (handle == NULL) {
+        fprintf(stderr, "Failed to open device %s: %s\n", interface, errbuf);
+        if (debug_mode) fclose(log_file);
+        return EXIT_FAILURE;
+    }
+
+    // Set non-blocking mode
+    if (pcap_setnonblock(handle, 1, errbuf) == -1) {
+        fprintf(stderr, "Error setting non-blocking mode: %s\n", pcap_geterr(handle));
+        pcap_close(handle);
+        if (debug_mode) fclose(log_file);
+        return EXIT_FAILURE;
+    }
+
+    // Get link type
+    linktype = pcap_datalink(handle);
+
+    // ncurses initialization
+    initscr();
+    cbreak();
+    noecho();
+    curs_set(FALSE);
+
+    struct timeval last_time, current_time;
+    gettimeofday(&last_time, NULL);
+
+    while (!stop) {
+        // Check if it's time to display statistics
+        gettimeofday(&current_time, NULL);
+        double elapsed = (current_time.tv_sec - last_time.tv_sec) + (current_time.tv_usec - last_time.tv_usec) / 1e6;
+        if (elapsed >= interval) {
+            display_statistics();
+            last_time = current_time;
+        }
+
+        // Capture packets
+        struct pcap_pkthdr *header;
+        const u_char *packet;
+        int ret = pcap_next_ex(handle, &header, &packet);
+        if (ret == 1) {
+            packet_handler(NULL, header, packet);
+        } else if (ret == 0) {
+            // No packets in buffer
+            if (debug_mode)
+                fprintf(log_file, "No packets in buffer\n");
+            sleep_ms(1);
+        } else if (ret == -1) {
+            fprintf(stderr, "Error capturing packets: %s\n", pcap_geterr(handle));
+            break;
+        } else if (ret == -2) {
+            // Break loop
+            break;
+        }
+    }
+
+    // Cleanup
+    pcap_close(handle);
+    endwin();
+    if (debug_mode) fclose(log_file);
+    return EXIT_SUCCESS;
+}
+
+// Packet handler function
+void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
+    if (debug_mode)
+        fprintf(log_file, "Captured packet length %u bytes\n", header->len);
+
+    (void)args; // Unused here
+
+    if (linktype == DLT_EN10MB) { // Ethernet
+        int ethernet_header_length = 14;
+        if ((int)header->len < ethernet_header_length) {
+            // Packet is too short for Ethernet header
+            return;
+        }
+
+        uint16_t eth_type = ntohs(*(uint16_t*)(packet + 12));
+
+        if (eth_type == 0x0800) { // IPv4
+            if (header->len < ethernet_header_length + sizeof(struct ip)) {
+                // Packet is too short for IPv4 header
+                return;
             }
+
+            struct ip *ip_hdr = (struct ip*)(packet + ethernet_header_length);
+            char src_ip[INET_ADDRSTRLEN];
+            char dst_ip[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &(ip_hdr->ip_src), src_ip, INET_ADDRSTRLEN);
+            inet_ntop(AF_INET, &(ip_hdr->ip_dst), dst_ip, INET_ADDRSTRLEN);
+
+            // Determine packet direction
+            int direction;
+            if (is_local_ip(src_ip)) {
+                direction = 1; 
+            } else if (is_local_ip(dst_ip)) {
+                direction = 0; 
+            } else {
+                return;
+            }
+
+            uint8_t protocol = ip_hdr->ip_p;
+            uint16_t src_port = 0;
+            uint16_t dst_port = 0;
+            char proto_str[8] = "other";
+
+            const u_char *transport_header = packet + ethernet_header_length + (ip_hdr->ip_hl * 4);
+
+            if (protocol == IPPROTO_TCP) {
+                if (header->len < ethernet_header_length + (ip_hdr->ip_hl * 4) + sizeof(struct tcphdr)) {
+                    // Packet is too short for TCP header
+                    return;
+                }
+                struct tcphdr *tcp_hdr = (struct tcphdr*)transport_header;
+                src_port = ntohs(TCP_SRC_PORT(tcp_hdr));
+                dst_port = ntohs(TCP_DST_PORT(tcp_hdr));
+                strcpy(proto_str, "tcp");
+            }
+            else if (protocol == IPPROTO_UDP) {
+                if (header->len < ethernet_header_length + (ip_hdr->ip_hl * 4) + sizeof(struct udphdr)) {
+                    // Packet is too short for UDP header
+                    return;
+                }
+                struct udphdr *udp_hdr = (struct udphdr*)transport_header;
+                src_port = ntohs(UDP_SRC_PORT(udp_hdr));
+                dst_port = ntohs(UDP_DST_PORT(udp_hdr));
+                strcpy(proto_str, "udp");
+            }
+            else if (protocol == IPPROTO_ICMP) {
+                strcpy(proto_str, "icmp");
+            }
+
+            update_connection(src_ip, dst_ip, src_port, dst_port, proto_str, header->len - ethernet_header_length, direction);
+        }
+        else if (eth_type == 0x86DD) { // IPv6
+            if (header->len < ethernet_header_length + sizeof(struct ip6_hdr)) {
+                // Packet is too short for IPv6 header
+                return;
+            }
+
+            struct ip6_hdr *ip6_hdr = (struct ip6_hdr*)(packet + ethernet_header_length);
+            char src_ip[INET6_ADDRSTRLEN];
+            char dst_ip[INET6_ADDRSTRLEN];
+            inet_ntop(AF_INET6, &(ip6_hdr->ip6_src), src_ip, INET6_ADDRSTRLEN);
+            inet_ntop(AF_INET6, &(ip6_hdr->ip6_dst), dst_ip, INET6_ADDRSTRLEN);
+
+            // Determine packet direction
+            int direction;
+            if (is_local_ip(src_ip)) {
+                direction = 1; 
+            }
+            else if (is_local_ip(dst_ip)) {
+                direction = 0; 
+            }
+            else {
+                return;
+            }
+
+            uint8_t next_header = ip6_hdr->ip6_nxt;
+            uint16_t src_port = 0;
+            uint16_t dst_port = 0;
+            char proto_str[8] = "other";
+
+            const u_char *transport_header = packet + ethernet_header_length + sizeof(struct ip6_hdr);
+
+            if (next_header == IPPROTO_TCP) {
+                if (header->len < ethernet_header_length + sizeof(struct ip6_hdr) + sizeof(struct tcphdr)) {
+                    // Packet is too short for TCP header
+                    return;
+                }
+                struct tcphdr *tcp_hdr = (struct tcphdr*)transport_header;
+                src_port = ntohs(TCP_SRC_PORT(tcp_hdr));
+                dst_port = ntohs(TCP_DST_PORT(tcp_hdr));
+                strcpy(proto_str, "tcp");
+            }
+            else if (next_header == IPPROTO_UDP) {
+                if (header->len < ethernet_header_length + sizeof(struct ip6_hdr) + sizeof(struct udphdr)) {
+                    // Packet is too short for UDP header
+                    return;
+                }
+                struct udphdr *udp_hdr = (struct udphdr*)transport_header;
+                src_port = ntohs(UDP_SRC_PORT(udp_hdr));
+                dst_port = ntohs(UDP_DST_PORT(udp_hdr));
+                strcpy(proto_str, "udp");
+            }
+            else if (next_header == IPPROTO_ICMPV6) {
+                strcpy(proto_str, "icmp6");
+            }
+
+            update_connection(src_ip, dst_ip, src_port, dst_port, proto_str, header->len - ethernet_header_length, direction);
         }
     }
+    else if (linktype == DLT_NULL) { // Loopback 
+        if (header->len < 4) {
+            return;
+        }
 
-    freeifaddrs(ifaddr);
+        uint32_t af = *(uint32_t*)packet;
+
+        char src_ip[INET6_ADDRSTRLEN];
+        char dst_ip[INET6_ADDRSTRLEN];
+        char protocol[8] = "other";
+        uint16_t src_port = 0, dst_port = 0;
+
+        const u_char *ip_packet = packet + 4;
+
+        if (af == AF_INET) { // IPv4
+            if (header->len < 4 + sizeof(struct ip)) {
+                // Packet is too short for IPv4 header
+                return;
+            }
+
+            struct ip *ip_hdr = (struct ip*)ip_packet;
+            inet_ntop(AF_INET, &(ip_hdr->ip_src), src_ip, INET_ADDRSTRLEN);
+            inet_ntop(AF_INET, &(ip_hdr->ip_dst), dst_ip, INET_ADDRSTRLEN);
+
+            // Determine packet direction
+            int direction;
+            if (is_local_ip(src_ip)) {
+                direction = 1; 
+            }
+            else if (is_local_ip(dst_ip)) {
+                direction = 0;
+            }
+            else {
+                return;
+            }
+
+            uint8_t protocol_num = ip_hdr->ip_p;
+
+            const u_char *transport_header = ip_packet + (ip_hdr->ip_hl * 4);
+
+            if (protocol_num == IPPROTO_TCP) {
+                if (header->len < 4 + (ip_hdr->ip_hl * 4) + sizeof(struct tcphdr)) {
+                    return;
+                }
+                struct tcphdr *tcp_hdr = (struct tcphdr*)transport_header;
+                src_port = ntohs(TCP_SRC_PORT(tcp_hdr));
+                dst_port = ntohs(TCP_DST_PORT(tcp_hdr));
+                strcpy(protocol, "tcp");
+            }
+            else if (protocol_num == IPPROTO_UDP) {
+                if (header->len < 4 + (ip_hdr->ip_hl * 4) + sizeof(struct udphdr)) {
+                    return;
+                }
+                struct udphdr *udp_hdr = (struct udphdr*)transport_header;
+                src_port = ntohs(UDP_SRC_PORT(udp_hdr));
+                dst_port = ntohs(UDP_DST_PORT(udp_hdr));
+                strcpy(protocol, "udp");
+            }
+            else if (protocol_num == IPPROTO_ICMP) {
+                strcpy(protocol, "icmp");
+            }
+            else {
+                strcpy(protocol, "other");
+            }
+
+            update_connection(src_ip, dst_ip, src_port, dst_port, protocol, header->len - 4, direction);
+        }
+        else if (af == AF_INET6) { // IPv6
+            if (header->len < 4 + sizeof(struct ip6_hdr)) {
+                // Packet is too short for IPv6 header
+                return;
+            }
+
+            struct ip6_hdr *ip6_hdr = (struct ip6_hdr*)ip_packet;
+            inet_ntop(AF_INET6, &(ip6_hdr->ip6_src), src_ip, INET6_ADDRSTRLEN);
+            inet_ntop(AF_INET6, &(ip6_hdr->ip6_dst), dst_ip, INET6_ADDRSTRLEN);
+
+            // Determine packet direction
+            int direction;
+            if (is_local_ip(src_ip)) {
+                direction = 1; 
+            }
+            else if (is_local_ip(dst_ip)) {
+                direction = 0; 
+            }
+            else {
+                return;
+            }
+
+            uint8_t next_header = ip6_hdr->ip6_nxt;
+            uint16_t src_port = 0;
+            uint16_t dst_port = 0;
+            char proto_str[8] = "other";
+
+            const u_char *transport_header = ip_packet + sizeof(struct ip6_hdr);
+
+            if (next_header == IPPROTO_TCP) {
+                if (header->len < 4 + sizeof(struct ip6_hdr) + sizeof(struct tcphdr)) {
+                    return;
+                }
+                struct tcphdr *tcp_hdr = (struct tcphdr*)transport_header;
+                src_port = ntohs(TCP_SRC_PORT(tcp_hdr));
+                dst_port = ntohs(TCP_DST_PORT(tcp_hdr));
+                strcpy(proto_str, "tcp");
+            }
+            else if (next_header == IPPROTO_UDP) {
+                if (header->len < 4 + sizeof(struct ip6_hdr) + sizeof(struct udphdr)) {
+                    return;
+                }
+                struct udphdr *udp_hdr = (struct udphdr*)transport_header;
+                src_port = ntohs(UDP_SRC_PORT(udp_hdr));
+                dst_port = ntohs(UDP_DST_PORT(udp_hdr));
+                strcpy(proto_str, "udp");
+            }
+            else if (next_header == IPPROTO_ICMPV6) {
+                strcpy(proto_str, "icmp6");
+            }
+
+            update_connection(src_ip, dst_ip, src_port, dst_port, proto_str, header->len - 4, direction);
+        }
+        else {
+            // Unknown address family
+            return;
+        }
+    }
 }
 
-// Check if the IP is local
-int is_local_ip(char *ip) {
-    char ip_copy[INET6_ADDRSTRLEN];
-    char packet_ip_copy[INET6_ADDRSTRLEN];
-
-    for (int i = 0; i < local_ip_count; i++) {
-        // Copy local IP and remove scope identifier if present
-        snprintf(ip_copy, sizeof(ip_copy), "%s", local_ips[i]);
-        char *percent = strchr(ip_copy, '%');
-        if (percent) {
-            *percent = '\0';
-        }
-
-        // Copy packet IP and remove scope identifier if present
-        snprintf(packet_ip_copy, sizeof(packet_ip_copy), "%s", ip);
-        percent = strchr(packet_ip_copy, '%');
-        if (percent) {
-            *percent = '\0';
-        }
-
-        if (strcmp(ip_copy, packet_ip_copy) == 0) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-// Structure for creating a unique connection key
-typedef struct {
-    char ip1[INET6_ADDRSTRLEN];
-    char ip2[INET6_ADDRSTRLEN];
-    uint16_t port1;
-    uint16_t port2;
-    char protocol[8];
-} ConnectionKey;
-
-// Compare two connection keys (direction-independent)
-int compare_keys(ConnectionKey *key1, ConnectionKey *key2) {
-    // Compare ip1 and ip2 in both directions
-    if (strcmp(key1->ip1, key2->ip1) == 0 &&
-        strcmp(key1->ip2, key2->ip2) == 0 &&
-        key1->port1 == key2->port1 &&
-        key1->port2 == key2->port2 &&
-        strcmp(key1->protocol, key2->protocol) == 0) {
-        return 1;
-    }
-
-    if (strcmp(key1->ip1, key2->ip2) == 0 &&
-        strcmp(key1->ip2, key2->ip1) == 0 &&
-        key1->port1 == key2->port2 &&
-        key1->port2 == key2->port1 &&
-        strcmp(key1->protocol, key2->protocol) == 0) {
-        return 1;
-    }
-
-    return 0;
-}
-
-// Find existing connection regardless of direction
-int find_connection(ConnectionKey *key) {
-    for (int i = 0; i < connection_count; i++) {
-        ConnectionKey existing_key;
-        strcpy(existing_key.ip1, connections[i].ip1);
-        strcpy(existing_key.ip2, connections[i].ip2);
-        existing_key.port1 = connections[i].port1;
-        existing_key.port2 = connections[i].port2;
-        strcpy(existing_key.protocol, connections[i].protocol);
-
-        if (compare_keys(&existing_key, key)) {
-            return i;
-        }
-    }
-    // New connection
-    return -1;
-}
-
-// Update connection statistics
+// Function to update connection statistics
 void update_connection(char *src_ip, char *dst_ip, uint16_t src_port, uint16_t dst_port,
-                      char *protocol, uint32_t bytes, int direction) {
+                       char *protocol, uint32_t bytes, int direction) {
     ConnectionKey key;
 
-    // Order IPs and ports for consistency
+    // IP addresses and ports are sorted in ascending order
     if (strcmp(src_ip, dst_ip) < 0 || (strcmp(src_ip, dst_ip) == 0 && src_port <= dst_port)) {
         strcpy(key.ip1, src_ip);
         strcpy(key.ip2, dst_ip);
@@ -247,7 +451,6 @@ void update_connection(char *src_ip, char *dst_ip, uint16_t src_port, uint16_t d
     }
 
     strcpy(key.protocol, protocol);
-
 
     int index = find_connection(&key);
     if (index == -1) {
@@ -281,63 +484,52 @@ void update_connection(char *src_ip, char *dst_ip, uint16_t src_port, uint16_t d
     }
 }
 
-// Format a value with units
-void format_value(double value, char *output, char *unit_str) {
-    const char *units[] = {"", "k", "M", "G"};
-    int unit = 0;
-    while (value >= 1000 && unit < 3) {
-        value /= 1000;
-        unit++;
+// Function to find connection index by key
+int find_connection(ConnectionKey *key) {
+    for (int i = 0; i < connection_count; i++) {
+        ConnectionKey existing_key;
+        strcpy(existing_key.ip1, connections[i].ip1);
+        strcpy(existing_key.ip2, connections[i].ip2);
+        existing_key.port1 = connections[i].port1;
+        existing_key.port2 = connections[i].port2;
+        strcpy(existing_key.protocol, connections[i].protocol);
+
+        if (compare_keys(&existing_key, key)) {
+            return i;
+        }
     }
-    strcpy(unit_str, units[unit]);
-    snprintf(output, 16, "%.1f", value);
+    // New connection
+    return -1;
 }
 
-// Modified function to display bandwidth in bits per second
-void format_bandwidth(double bytes, double interval, char *output, char *unit_str) {
-    double bps = (bytes * 8) / interval; // Convert bytes to bits
-    const char *units[] = {"b", "k", "M", "G"}; // Bits per second
-    int unit = 0;
-    while (bps >= 1000 && unit < 3) {
-        bps /= 1000;
-        unit++;
+// Function to compare connection keys
+int compare_keys(ConnectionKey *key1, ConnectionKey *key2) {
+    // Compare both directions
+    if (strcmp(key1->ip1, key2->ip1) == 0 &&
+        strcmp(key1->ip2, key2->ip2) == 0 &&
+        key1->port1 == key2->port1 &&
+        key1->port2 == key2->port2 &&
+        strcmp(key1->protocol, key2->protocol) == 0) {
+        return 1;
     }
-    strcpy(unit_str, units[unit]);
-    snprintf(output, 16, "%.1f", bps);
-}
 
-// Compare by total bytes
-int compare_bytes(const void *a, const void *b) {
-    Connection *connA = (Connection *)a;
-    Connection *connB = (Connection *)b;
-    uint64_t totalA = connA->rx_bytes + connA->tx_bytes;
-    uint64_t totalB = connB->rx_bytes + connB->tx_bytes;
-    if (totalA < totalB) return 1;
-    if (totalA > totalB) return -1;
+    if (strcmp(key1->ip1, key2->ip2) == 0 &&
+        strcmp(key1->ip2, key2->ip1) == 0 &&
+        key1->port1 == key2->port2 &&
+        key1->port2 == key2->port1 &&
+        strcmp(key1->protocol, key2->protocol) == 0) {
+        return 1;
+    }
+
     return 0;
 }
 
-// Compare by total packets
-int compare_packets(const void *a, const void *b) {
-    Connection *connA = (Connection *)a;
-    Connection *connB = (Connection *)b;
-    uint64_t totalA = connA->rx_packets + connA->tx_packets;
-    uint64_t totalB = connB->rx_packets + connB->tx_packets;
-    if (totalA < totalB) return 1;
-    if (totalA > totalB) return -1;
-    return 0;
-}
-
-int is_ipv6_address(const char *ip) {
-    return strchr(ip, ':') != NULL;
-}
-
-// Display statistics
+// Function to display statistics
 void display_statistics() {
-    // Clear the screen
+    // Clear screen
     clear();
 
-    // Print headers
+    // Display header
     mvprintw(0, 0, "Src IP:port                          Dst IP:port                     Proto             Rx         Tx");
     mvprintw(1, 0, "                                                                                                  b/s p/s     b/s p/s");
 
@@ -354,9 +546,9 @@ void display_statistics() {
 
     int displayed_connections = 0;
 
-    // Display connections with activity
+    // Display only active connections
     for (int i = 0; i < connection_count && displayed_connections < 10; i++) {
-        // Check if the connection had any activity
+        // Check if the connection is active
         if (connections[i].rx_bytes == 0 && connections[i].tx_bytes == 0 &&
             connections[i].rx_packets == 0 && connections[i].tx_packets == 0) {
             continue; // Skip inactive connections
@@ -366,13 +558,12 @@ void display_statistics() {
         char rx_pps_str[16], tx_pps_str[16];
         char rx_unit[4], tx_unit[4];
 
-    
         int is_icmp = (strcmp(connections[i].protocol, "icmp") == 0 ||
                        strcmp(connections[i].protocol, "icmp6") == 0);
 
-        // Format source and destination IP:port
+        // Format source and destination IP addresses
         if (is_icmp) {
-            //  For ICMP, we don't show ports
+            // For ICMP, display only IP addresses
             if (is_ipv6_address(connections[i].ip1)) {
                 snprintf(src, sizeof(src), "[%s]", connections[i].ip1);
             } else {
@@ -385,7 +576,7 @@ void display_statistics() {
                 snprintf(dst, sizeof(dst), "%s", connections[i].ip2);
             }
         } else {
-            // For other protocols, show IP:port
+            // For other protocols, display IP addresses and ports
             if (is_ipv6_address(connections[i].ip1)) {
                 snprintf(src, sizeof(src), "[%s]:%d", connections[i].ip1, connections[i].port1);
             } else {
@@ -402,7 +593,7 @@ void display_statistics() {
         double time_diff = (double)interval;
         if (time_diff == 0) time_diff = 1.0;
 
-        // Format bandwidth (convert to bps from bytes)
+        // Format bandwidth
         format_bandwidth(connections[i].rx_bytes, time_diff, rx_bw, rx_unit);
         format_bandwidth(connections[i].tx_bytes, time_diff, tx_bw, tx_unit);
 
@@ -410,7 +601,7 @@ void display_statistics() {
         snprintf(rx_pps_str, sizeof(rx_pps_str), "%.1f", connections[i].rx_packets / time_diff);
         snprintf(tx_pps_str, sizeof(tx_pps_str), "%.1f", connections[i].tx_packets / time_diff);
 
-        // Print connection details with alignment
+        // Display connection statistics
         mvprintw(displayed_connections + 2, 0, "%-35s %-30s %-7s %6s%-1s %6s %6s%-1s %6s",
                  src, dst, connections[i].protocol,
                  rx_bw, rx_unit, rx_pps_str,
@@ -423,7 +614,7 @@ void display_statistics() {
                     tx_bw, tx_unit, tx_pps_str);
         }
 
-        // Reset counters after displaying
+        // Reset counters
         connections[i].rx_bytes = 0;
         connections[i].tx_bytes = 0;
         connections[i].rx_packets = 0;
@@ -432,413 +623,28 @@ void display_statistics() {
         displayed_connections++;
     }
 
-    // Refresh the screen
+    // Refresh screen
     refresh();
 }
 
-
-
-// Packet handler for captured packets
-void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
-    if (debug_mode)
-        fprintf(log_file, "Captured packet length %u bytes\n", header->len);
-
-     (void)args; // Unused 
-
-    if (linktype == DLT_EN10MB) { // Ethernet
-        int ethernet_header_length = 14; // Standard Ethernet header length
-        if ((int)header->len < ethernet_header_length) {
-            // Packet too short for Ethernet header
-            return;
-        }
-
-        uint16_t eth_type = ntohs(*(uint16_t*)(packet + 12));
-
-        if (eth_type == 0x0800) { // IPv4
-            if (header->len < ethernet_header_length + sizeof(struct ip)) {
-                // Packet too short for IPv4 header
-                return;
-            }
-
-            struct ip *ip_hdr = (struct ip*)(packet + ethernet_header_length);
-            char src_ip[INET_ADDRSTRLEN];
-            char dst_ip[INET_ADDRSTRLEN];
-            inet_ntop(AF_INET, &(ip_hdr->ip_src), src_ip, INET_ADDRSTRLEN);
-            inet_ntop(AF_INET, &(ip_hdr->ip_dst), dst_ip, INET_ADDRSTRLEN);
-
-            // Determine packet direction
-            int direction;
-            if (is_local_ip(src_ip)) {
-                direction = 1; // Outgoing
-            } else if (is_local_ip(dst_ip)) {
-                direction = 0; // Incoming
-            } else {
-                // Packet not related to our host
-                return;
-            }
-
-            uint8_t protocol = ip_hdr->ip_p;
-            uint16_t src_port = 0;
-            uint16_t dst_port = 0;
-            char proto_str[8] = "other";
-
-            const u_char *transport_header = packet + ethernet_header_length + (ip_hdr->ip_hl * 4);
-
-            if (protocol == IPPROTO_TCP) {
-                if (header->len < ethernet_header_length + (ip_hdr->ip_hl * 4) + sizeof(struct tcphdr)) {
-                    // Packet too short for TCP header
-                    return;
-                }
-                struct tcphdr *tcp_hdr = (struct tcphdr*)transport_header;
-                src_port = ntohs(TCP_SRC_PORT(tcp_hdr));
-                dst_port = ntohs(TCP_DST_PORT(tcp_hdr));
-                strcpy(proto_str, "tcp");
-            }
-            else if (protocol == IPPROTO_UDP) {
-                if (header->len < ethernet_header_length + (ip_hdr->ip_hl * 4) + sizeof(struct udphdr)) {
-                    // Packet too short for UDP header
-                    return;
-                }
-                struct udphdr *udp_hdr = (struct udphdr*)transport_header;
-                src_port = ntohs(UDP_SRC_PORT(udp_hdr));
-                dst_port = ntohs(UDP_DST_PORT(udp_hdr));
-                strcpy(proto_str, "udp");
-            }
-            else if (protocol == IPPROTO_ICMP) {
-                strcpy(proto_str, "icmp");
-            }
-
-            update_connection(src_ip, dst_ip, src_port, dst_port, proto_str, header->len - ethernet_header_length, direction);
-        }
-        else if (eth_type == 0x86DD) { // IPv6
-            if (header->len < ethernet_header_length + sizeof(struct ip6_hdr)) {
-                // Packet too short for IPv6 header
-                return;
-            }
-
-            struct ip6_hdr *ip6_hdr = (struct ip6_hdr*)(packet + ethernet_header_length);
-            char src_ip[INET6_ADDRSTRLEN];
-            char dst_ip[INET6_ADDRSTRLEN];
-            inet_ntop(AF_INET6, &(ip6_hdr->ip6_src), src_ip, INET6_ADDRSTRLEN);
-            inet_ntop(AF_INET6, &(ip6_hdr->ip6_dst), dst_ip, INET6_ADDRSTRLEN);
-
-            // Determine packet direction
-            int direction;
-            if (is_local_ip(src_ip)) {
-                direction = 1; // Outgoing
-            }
-            else if (is_local_ip(dst_ip)) {
-                direction = 0; // Incoming
-            }
-            else {
-                // Packet not related to our host
-                return;
-            }
-
-            uint8_t next_header = ip6_hdr->ip6_nxt;
-            uint16_t src_port = 0;
-            uint16_t dst_port = 0;
-            char proto_str[8] = "other";
-
-            const u_char *transport_header = packet + ethernet_header_length + sizeof(struct ip6_hdr);
-
-            if (next_header == IPPROTO_TCP) {
-                if (header->len < ethernet_header_length + sizeof(struct ip6_hdr) + sizeof(struct tcphdr)) {
-                    // Packet too short for TCP header
-                    return;
-                }
-                struct tcphdr *tcp_hdr = (struct tcphdr*)transport_header;
-                src_port = ntohs(TCP_SRC_PORT(tcp_hdr));
-                dst_port = ntohs(TCP_DST_PORT(tcp_hdr));
-                strcpy(proto_str, "tcp");
-            }
-            else if (next_header == IPPROTO_UDP) {
-                if (header->len < ethernet_header_length + sizeof(struct ip6_hdr) + sizeof(struct udphdr)) {
-                    // Packet too short for UDP header
-                    return;
-                }
-                struct udphdr *udp_hdr = (struct udphdr*)transport_header;
-                src_port = ntohs(UDP_SRC_PORT(udp_hdr));
-                dst_port = ntohs(UDP_DST_PORT(udp_hdr));
-                strcpy(proto_str, "udp");
-            }
-            else if (next_header == IPPROTO_ICMPV6) {
-                strcpy(proto_str, "icmp6");
-            }
-
-            update_connection(src_ip, dst_ip, src_port, dst_port, proto_str, header->len - ethernet_header_length, direction);
-        }
-    }
-    else if (linktype == DLT_NULL) { // Loopback (e.g., lo0 on macOS)
-        if (header->len < 4) {
-            // Packet too short for DLT_NULL header
-            return;
-        }
-
-        uint32_t af = *(uint32_t*)packet;
-
-        char src_ip[INET6_ADDRSTRLEN];
-        char dst_ip[INET6_ADDRSTRLEN];
-        char protocol[8] = "other";
-        uint16_t src_port = 0, dst_port = 0;
-
-        const u_char *ip_packet = packet + 4;
-
-        if (af == AF_INET) { // IPv4
-            if (header->len < 4 + sizeof(struct ip)) {
-                // Packet too short for IPv4 header
-                return;
-            }
-
-            struct ip *ip_hdr = (struct ip*)ip_packet;
-            inet_ntop(AF_INET, &(ip_hdr->ip_src), src_ip, INET_ADDRSTRLEN);
-            inet_ntop(AF_INET, &(ip_hdr->ip_dst), dst_ip, INET_ADDRSTRLEN);
-
-            // Determine packet direction
-            int direction;
-            if (is_local_ip(src_ip)) {
-                direction = 1; // Outgoing
-            }
-            else if (is_local_ip(dst_ip)) {
-                direction = 0; // Incoming
-            }
-            else {
-                // Packet not related to our host
-                return;
-            }
-
-            uint8_t protocol_num = ip_hdr->ip_p;
-
-            const u_char *transport_header = ip_packet + (ip_hdr->ip_hl * 4);
-
-            if (protocol_num == IPPROTO_TCP) {
-                if (header->len < 4 + (ip_hdr->ip_hl * 4) + sizeof(struct tcphdr)) {
-                    // Packet too short for TCP header
-                    return;
-                }
-                struct tcphdr *tcp_hdr = (struct tcphdr*)transport_header;
-                src_port = ntohs(TCP_SRC_PORT(tcp_hdr));
-                dst_port = ntohs(TCP_DST_PORT(tcp_hdr));
-                strcpy(protocol, "tcp");
-            }
-            else if (protocol_num == IPPROTO_UDP) {
-                if (header->len < 4 + (ip_hdr->ip_hl * 4) + sizeof(struct udphdr)) {
-                    // Packet too short for UDP header
-                    return;
-                }
-                struct udphdr *udp_hdr = (struct udphdr*)transport_header;
-                src_port = ntohs(UDP_SRC_PORT(udp_hdr));
-                dst_port = ntohs(UDP_DST_PORT(udp_hdr));
-                strcpy(protocol, "udp");
-            }
-            else if (protocol_num == IPPROTO_ICMP) {
-                strcpy(protocol, "icmp");
-            }
-            else {
-                strcpy(protocol, "other");
-            }
-
-            update_connection(src_ip, dst_ip, src_port, dst_port, protocol, header->len - 4, direction);
-        }
-        else if (af == AF_INET6) { // IPv6
-            if (header->len < 4 + sizeof(struct ip6_hdr)) {
-                // Packet too short for IPv6 header
-                return;
-            }
-
-            struct ip6_hdr *ip6_hdr = (struct ip6_hdr*)ip_packet;
-            inet_ntop(AF_INET6, &(ip6_hdr->ip6_src), src_ip, INET6_ADDRSTRLEN);
-            inet_ntop(AF_INET6, &(ip6_hdr->ip6_dst), dst_ip, INET6_ADDRSTRLEN);
-
-            // Determine packet direction
-            int direction;
-            if (is_local_ip(src_ip)) {
-                direction = 1; // Outgoing
-            }
-            else if (is_local_ip(dst_ip)) {
-                direction = 0; // Incoming
-            }
-            else {
-                // Packet not related to our host
-                return;
-            }
-
-            uint8_t next_header = ip6_hdr->ip6_nxt;
-            uint16_t src_port = 0;
-            uint16_t dst_port = 0;
-            char proto_str[8] = "other";
-
-            const u_char *transport_header = ip_packet + sizeof(struct ip6_hdr);
-
-            if (next_header == IPPROTO_TCP) {
-                if (header->len < 4 + sizeof(struct ip6_hdr) + sizeof(struct tcphdr)) {
-                    // Packet too short for TCP header
-                    return;
-                }
-                struct tcphdr *tcp_hdr = (struct tcphdr*)transport_header;
-                src_port = ntohs(TCP_SRC_PORT(tcp_hdr));
-                dst_port = ntohs(TCP_DST_PORT(tcp_hdr));
-                strcpy(proto_str, "tcp");
-            }
-            else if (next_header == IPPROTO_UDP) {
-                if (header->len < 4 + sizeof(struct ip6_hdr) + sizeof(struct udphdr)) {
-                    // Packet too short for UDP header
-                    return;
-                }
-                struct udphdr *udp_hdr = (struct udphdr*)transport_header;
-                src_port = ntohs(UDP_SRC_PORT(udp_hdr));
-                dst_port = ntohs(UDP_DST_PORT(udp_hdr));
-                strcpy(proto_str, "udp");
-            }
-            else if (next_header == IPPROTO_ICMPV6) {
-                strcpy(proto_str, "icmp6");
-            }
-
-            update_connection(src_ip, dst_ip, src_port, dst_port, proto_str, header->len - 4, direction);
-        }
-        else {
-            // Unknown address family
-            return;
-        }
-    }
-}
-
-// Function to parse command-line arguments
-int parse_arguments(int argc, char *argv[], Settings *settings) {
-    int opt;
-    // Initialize default values
-    settings->interface = NULL;
-    settings->sort_mode = 'b';
-    settings->interval = 1;
-
-    while ((opt = getopt(argc, argv, "i:s:t:d")) != -1) {
-        switch (opt) {
-            case 'i':
-                settings->interface = optarg;
-                break;
-            case 's':
-                if (optarg[0] == 'b' || optarg[0] == 'p') {
-                    settings->sort_mode = optarg[0];
-                } else {
-                    fprintf(stderr, "Invalid sort mode: %c\n", optarg[0]);
-                    return -1;
-                }
-                break;
-            case 't':
-                settings->interval = atoi(optarg);
-                if (settings->interval <= 0) {
-                    fprintf(stderr, "Interval must be a positive number\n");
-                    return -1;
-                }
-                break;
-            case 'd':
-                debug_mode = 1;
-                break;
-            default:
-                print_usage();
-                return -1;
-        }
-    }
-
-    // Check required parameter
-    if (settings->interface == NULL) {
-        fprintf(stderr, "Error: Network interface not specified\n");
-        print_usage();
-        return -1;
-    }
-
+// Compare bytes function
+int compare_bytes(const void *a, const void *b) {
+    Connection *connA = (Connection *)a;
+    Connection *connB = (Connection *)b;
+    uint64_t totalA = connA->rx_bytes + connA->tx_bytes;
+    uint64_t totalB = connB->rx_bytes + connB->tx_bytes;
+    if (totalA < totalB) return 1;
+    if (totalA > totalB) return -1;
     return 0;
 }
 
-int main(int argc, char *argv[]) {
-    Settings settings;
-    if (parse_arguments(argc, argv, &settings) != 0) {
-        exit(EXIT_FAILURE);
-    }
-
-    // Set global variables based on settings
-    interface = settings.interface;
-    sort_mode = settings.sort_mode;
-    interval = settings.interval;
-
-    // Open log file
-    log_file = fopen("isa-top.log", "w");
-    if (log_file == NULL) {
-        perror("Failed to open isa-top.log for logging");
-        exit(EXIT_FAILURE);
-    }
-
-    // Set SIGINT handler
-    signal(SIGINT, handle_sigint);
-
-    // Retrieve local IP addresses
-    get_local_ips(interface);
-
-    // Initialize pcap
-    char errbuf[PCAP_ERRBUF_SIZE];
-
-    handle = pcap_open_live(interface, BUFSIZ, 1, 1000, errbuf);
-    if (handle == NULL) {
-        endwin();
-        fprintf(stderr, "Failed to open device %s: %s\n", interface, errbuf);
-        fclose(log_file);
-        return EXIT_FAILURE;
-    }
-
-    // Set non-blocking mode for pcap
-    if (pcap_setnonblock(handle, 1, errbuf) == -1) {
-        endwin();
-        fprintf(stderr, "Error setting non-blocking mode: %s\n", pcap_geterr(handle));
-        pcap_close(handle);
-        fclose(log_file);
-        return EXIT_FAILURE;
-    }
-
-    // Determine the link layer type
-    linktype = pcap_datalink(handle);
-
-    // Initialize ncurses
-    initscr();
-    cbreak();
-    noecho();
-    curs_set(FALSE);
-
-    // Initialize time tracking variables
-    struct timeval last_time, current_time;
-    gettimeofday(&last_time, NULL);
-
-    while (!stop) {
-        // Check if interval has passed
-        gettimeofday(&current_time, NULL);
-        double elapsed = (current_time.tv_sec - last_time.tv_sec) + (current_time.tv_usec - last_time.tv_usec) / 1e6;
-        if (elapsed >= interval) {
-            display_statistics();
-            last_time = current_time;
-        }
-
-        // Capture next packet (non-blocking)
-        struct pcap_pkthdr *header;
-        const u_char *packet;
-        int ret = pcap_next_ex(handle, &header, &packet);
-        if (ret == 1) {
-            packet_handler(NULL, header, packet);
-        } else if (ret == 0) {
-            // No packets in buffer, sleep a bit
-            if (debug_mode)
-                fprintf(log_file, "No packets in buffer\n");
-            sleep_ms(1);
-        } else if (ret == -1) {
-            fprintf(stderr, "Error capturing packets: %s\n", pcap_geterr(handle));
-            break;
-        } else if (ret == -2) {
-            // pcap_breakloop() was called
-            break;
-        }
-    }
-
-    // Cleanup
-    pcap_close(handle);
-    endwin();
-    fclose(log_file);
-    return EXIT_SUCCESS;
+// Compare packets function
+int compare_packets(const void *a, const void *b) {
+    Connection *connA = (Connection *)a;
+    Connection *connB = (Connection *)b;
+    uint64_t totalA = connA->rx_packets + connA->tx_packets;
+    uint64_t totalB = connB->rx_packets + connB->tx_packets;
+    if (totalA < totalB) return 1;
+    if (totalA > totalB) return -1;
+    return 0;
 }

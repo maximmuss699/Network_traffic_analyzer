@@ -39,10 +39,6 @@ returns without capturing a packet (indicated by a return value of 0), the progr
 .B sleep_ms(1)
 to pause execution for 1 millisecond. This brief sleep period prevents the application from entering a tight loop that would otherwise lead to high CPU utilization.
 
-By introducing this short delay, 
-.B isa-top
-balances responsiveness with efficiency, allowing it to remain lightweight and minimally intrusive while continuously monitoring network traffic.
-
 .SH OPTIONS
 .TP
 \fB\-i\fP \fIinterface\fP
@@ -113,10 +109,10 @@ represents the destination IP address and port.
 indicates the protocol type (e.g., tcp, udp, icmp).
 .IP
 .B Rx
-shows the received data rate in bytes per second (B/s) and packets per second (P/s).
+shows the received data rate in bits per second (B/s) and packets per second (P/s).
 .IP
 .B Tx
-shows the transmitted data rate in bytes per second (B/s) and packets per second (P/s).
+shows the transmitted data rate in bits per second (B/s) and packets per second (P/s).
 
 .SH AUTHOR
 Maksim Samusevich (login: xsamus00)
@@ -132,7 +128,8 @@ This is free software; see the source for copying conditions. There is NO warran
 
 .SH FILES
 .B isa-top.c
+.B isa-top.h
+.B utils.c
 .B isa-top.1
-.B README.md
 .B Makefile
 .B isa-top.log

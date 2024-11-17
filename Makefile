@@ -1,24 +1,21 @@
-
-TARGET = isa-top
-
+# Makefile
 
 CC = gcc
-
-
 CFLAGS = -Wall -Wextra -O2
-
-
 LDFLAGS = -lpcap -lncurses
 
-
-SRC = isa-top.c
-
+SOURCES = isa-top.c utils.c
+OBJECTS = $(SOURCES:.c=.o)
+HEADERS = isa-top.h
+TARGET = isa-top
 
 all: $(TARGET)
 
-$(TARGET): $(SRC)
-	$(CC) $(CFLAGS) $(SRC) -o $(TARGET) $(LDFLAGS)  
+$(TARGET): $(OBJECTS)
+	$(CC) $(CFLAGS) -o $(TARGET) $(OBJECTS) $(LDFLAGS)
 
+%.o: %.c $(HEADERS)
+	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(TARGET)  
+	rm -f $(OBJECTS) $(TARGET)
