@@ -366,17 +366,37 @@ void display_statistics() {
         char rx_pps_str[16], tx_pps_str[16];
         char rx_unit[4], tx_unit[4];
 
-        // Format source and destination IP:port
-        if (is_ipv6_address(connections[i].ip1)) {
-            snprintf(src, sizeof(src), "[%s]:%d", connections[i].ip1, connections[i].port1);
-        } else {
-            snprintf(src, sizeof(src), "%s:%d", connections[i].ip1, connections[i].port1);
-        }
+    
+        int is_icmp = (strcmp(connections[i].protocol, "icmp") == 0 ||
+                       strcmp(connections[i].protocol, "icmp6") == 0);
 
-        if (is_ipv6_address(connections[i].ip2)) {
-            snprintf(dst, sizeof(dst), "[%s]:%d", connections[i].ip2, connections[i].port2);
+        // Format source and destination IP:port
+        if (is_icmp) {
+            //  For ICMP, we don't show ports
+            if (is_ipv6_address(connections[i].ip1)) {
+                snprintf(src, sizeof(src), "[%s]", connections[i].ip1);
+            } else {
+                snprintf(src, sizeof(src), "%s", connections[i].ip1);
+            }
+
+            if (is_ipv6_address(connections[i].ip2)) {
+                snprintf(dst, sizeof(dst), "[%s]", connections[i].ip2);
+            } else {
+                snprintf(dst, sizeof(dst), "%s", connections[i].ip2);
+            }
         } else {
-            snprintf(dst, sizeof(dst), "%s:%d", connections[i].ip2, connections[i].port2);
+            // For other protocols, show IP:port
+            if (is_ipv6_address(connections[i].ip1)) {
+                snprintf(src, sizeof(src), "[%s]:%d", connections[i].ip1, connections[i].port1);
+            } else {
+                snprintf(src, sizeof(src), "%s:%d", connections[i].ip1, connections[i].port1);
+            }
+
+            if (is_ipv6_address(connections[i].ip2)) {
+                snprintf(dst, sizeof(dst), "[%s]:%d", connections[i].ip2, connections[i].port2);
+            } else {
+                snprintf(dst, sizeof(dst), "%s:%d", connections[i].ip2, connections[i].port2);
+            }
         }
 
         double time_diff = (double)interval;
@@ -415,6 +435,7 @@ void display_statistics() {
     // Refresh the screen
     refresh();
 }
+
 
 
 // Packet handler for captured packets
