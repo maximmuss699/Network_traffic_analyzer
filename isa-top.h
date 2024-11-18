@@ -28,7 +28,7 @@
 #include <string.h>
 
 #define MAX_CONNECTIONS 1000
-#define MAX_IP_ADDRESSES 10
+
 
 // Macros for getting source and destination ports
 #if defined(__APPLE__) || defined(__MACH__)

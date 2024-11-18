@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <netdb.h>
-
+#include "utils.h"
 // 
 char local_ips[MAX_IP_ADDRESSES][INET6_ADDRSTRLEN];
 int local_ip_count = 0;
@@ -175,3 +175,4 @@ int parse_arguments(int argc, char *argv[]) {
 
     return 0;
 }
+

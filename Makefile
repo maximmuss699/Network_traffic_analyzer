@@ -4,7 +4,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra -O2
 LDFLAGS = -lpcap -lncurses
 
-SOURCES = isa-top.c utils.c
+SOURCES = isa-top.c statistics.c utils.c
 OBJECTS = $(SOURCES:.c=.o)
 HEADERS = isa-top.h
 TARGET = isa-top
