@@ -65,6 +65,7 @@ void display_statistics() {
 
         char src[1024], dst[1024], rx_bw[16], tx_bw[16];
         char rx_pps_str[16], tx_pps_str[16];
+        char rx_pps_unit[4], tx_pps_unit[4]; 
         char rx_unit[4], tx_unit[4];
 
         int is_icmp = (strcmp(connections[i].protocol, "icmp") == 0 ||
@@ -246,14 +247,16 @@ void display_statistics() {
         format_bandwidth(connections[i].tx_bytes, time_diff, tx_bw, tx_unit);
 
         // Format packets per second
-        snprintf(rx_pps_str, sizeof(rx_pps_str), "%.1f", connections[i].rx_packets / time_diff);
-        snprintf(tx_pps_str, sizeof(tx_pps_str), "%.1f", connections[i].tx_packets / time_diff);
+        format_value(connections[i].rx_packets / time_diff, rx_pps_str, rx_pps_unit);
+        format_value(connections[i].tx_packets / time_diff, tx_pps_str, tx_pps_unit);
 
         // Display the connection statistics
-        mvprintw(displayed_connections + 2, 0, "%-35s %-30s %-7s %6s%-1s %6s %6s%-1s %6s",
-                 src, dst, connections[i].protocol,
-                 rx_bw, rx_unit, rx_pps_str,
-                 tx_bw, tx_unit, tx_pps_str);
+        mvprintw(displayed_connections + 2, 0, "%-35s %-30s %-7s %6s %-2s %6s %-2s %6s %-2s %6s %-2s",
+         src, dst, connections[i].protocol,
+         rx_bw, rx_unit, rx_pps_str, rx_pps_unit,
+         tx_bw, tx_unit, tx_pps_str, tx_pps_unit);
+
+         
 
         if (debug_mode) {
             fprintf(log_file, "Connection %d: %s -> %s, Protocol: %s, Rx: %s%s (%s p/s), Tx: %s%s (%s p/s)\n",
