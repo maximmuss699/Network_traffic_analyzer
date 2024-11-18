@@ -522,7 +522,7 @@ void display_statistics() {
             continue; 
         }
 
-        char src[100], dst[100], rx_bw[16], tx_bw[16];
+        char src[1024], dst[1024], rx_bw[16], tx_bw[16];
         char rx_pps_str[16], tx_pps_str[16];
         char rx_unit[4], tx_unit[4];
 
