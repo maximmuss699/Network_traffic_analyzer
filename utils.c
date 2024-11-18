@@ -121,3 +121,57 @@ void format_bandwidth(double bytes, double interval, char *output, char *unit_st
     strcpy(unit_str, units[unit]);
     snprintf(output, 16, "%.1f", bps);
 }
+
+// Function to print usage
+void print_usage() {
+    fprintf(stderr, "Usage: isa-top -i <interface> [-s b|p] [-t interval] [-d]\n");
+    fprintf(stderr, "  -i <interface> : Specify the network interface to monitor (required)\n");
+    fprintf(stderr, "  -s b|p         : Sort mode: 'b' for bytes, 'p' for packets (default 'b')\n");
+    fprintf(stderr, "  -t interval    : Interval for updating statistics in seconds (default 1)\n");
+    fprintf(stderr, "  -d             : Enable debug mode\n");
+}
+
+// Function to parse command line arguments
+int parse_arguments(int argc, char *argv[]) {
+    int opt;
+    interface = NULL;
+    sort_mode = 'b';
+    interval = 1;
+
+    while ((opt = getopt(argc, argv, "i:s:t:d")) != -1) {
+        switch (opt) {
+            case 'i':
+                interface = optarg;
+                break;
+            case 's':
+                if (optarg[0] == 'b' || optarg[0] == 'p') {
+                    sort_mode = optarg[0];
+                } else {
+                    fprintf(stderr, "Invalid sort mode: %c\n", optarg[0]);
+                    return -1;
+                }
+                break;
+            case 't':
+                interval = atoi(optarg);
+                if (interval <= 0) {
+                    fprintf(stderr, "Interval must be a positive number\n");
+                    return -1;
+                }
+                break;
+            case 'd':
+                debug_mode = 1;
+                break;
+            default:
+                print_usage();
+                return -1;
+        }
+    }
+
+    if (interface == NULL) {
+        fprintf(stderr, "Error: Network interface not specified\n");
+        print_usage();
+        return -1;
+    }
+
+    return 0;
+}

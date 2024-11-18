@@ -23,6 +23,9 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <ncurses.h>
+#include <stdlib.h>
+#include <sys/time.h>
+#include <string.h>
 
 #define MAX_CONNECTIONS 1000
 #define MAX_IP_ADDRESSES 10
@@ -82,6 +85,9 @@ extern pcap_t *handle;
 
 // External log file variable
 extern FILE *log_file;
+
+
+
 
 // Function prototypes
 void sleep_ms(long milliseconds);
