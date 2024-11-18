@@ -72,7 +72,7 @@ int is_local_ip(char *ip) {
 
     for (int i = 0; i < local_ip_count; i++) {
         // Copy local IP and remove scope ID if present
-        snprintf(ip_copy, sizeof(ip_copy), "%s", local_ips[i]);
+        snprintf(ip_copy, sizeof(ip_copy), "%.45s", local_ips[i]);
         char *percent = strchr(ip_copy, '%');
         if (percent) {
             *percent = '\0';
