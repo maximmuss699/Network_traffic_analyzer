@@ -53,6 +53,8 @@ typedef struct {
     uint64_t tx_bytes;
     uint64_t rx_packets;
     uint64_t tx_packets;
+    int last_direction;
+    
 } Connection;
 
 // Structure for connection key

@@ -1,3 +1,4 @@
+
 // isa-top.c
 
 /**
@@ -158,7 +159,7 @@ int main(int argc, char *argv[]) {
         } else if (ret == 0) {
             // No packets in buffer
             if (debug_mode)
-                fprintf(log_file, "No packets in buffer\n");
+              //  fprintf(log_file, "No packets in buffer\n");
             sleep_ms(1);
         } else if (ret == -1) {
             fprintf(stderr, "Error capturing packets: %s\n", pcap_geterr(handle));
@@ -437,6 +438,13 @@ void update_connection(char *src_ip, char *dst_ip, uint16_t src_port, uint16_t d
                        char *protocol, uint32_t bytes, int direction) {
     ConnectionKey key;
 
+    if (debug_mode) {
+        fprintf(log_file, "Received packet: %s:%d -> %s:%d (%s), %d bytes, direction: %d\n",
+                src_ip, src_port, dst_ip, dst_port, protocol, bytes, direction);
+    }
+
+
+
     // IP addresses and ports are sorted in ascending order
     if (strcmp(src_ip, dst_ip) < 0 || (strcmp(src_ip, dst_ip) == 0 && src_port <= dst_port)) {
         strcpy(key.ip1, src_ip);
@@ -465,6 +473,7 @@ void update_connection(char *src_ip, char *dst_ip, uint16_t src_port, uint16_t d
             connections[index].tx_bytes = 0;
             connections[index].rx_packets = 0;
             connections[index].tx_packets = 0;
+            connections[index].last_direction = direction;
             if (debug_mode)
                 fprintf(log_file, "Added new connection: %s:%d <-> %s:%d (%s)\n",
                         key.ip1, key.port1, key.ip2, key.port2, key.protocol);
@@ -474,6 +483,8 @@ void update_connection(char *src_ip, char *dst_ip, uint16_t src_port, uint16_t d
             return;
         }
     }
+
+    connections[index].last_direction = direction;
 
     if (direction == 0) { // Receive (Rx)
         connections[index].rx_bytes += bytes;
@@ -524,16 +535,15 @@ int compare_keys(ConnectionKey *key1, ConnectionKey *key2) {
     return 0;
 }
 
-// Function to display statistics
 void display_statistics() {
-    // Clear screen
+    // Очистить экран
     clear();
 
-    // Display header
+    // Отобразить заголовок
     mvprintw(0, 0, "Src IP:port                          Dst IP:port                     Proto             Rx         Tx");
     mvprintw(1, 0, "                                                                                                  b/s p/s     b/s p/s");
 
-    // Sort connections
+    // Сортировка соединений
     if (sort_mode == 'b') {
         qsort(connections, connection_count, sizeof(Connection), compare_bytes);
         if (debug_mode)
@@ -546,12 +556,12 @@ void display_statistics() {
 
     int displayed_connections = 0;
 
-    // Display only active connections
+    // Отобразить только активные соединения
     for (int i = 0; i < connection_count && displayed_connections < 10; i++) {
-        // Check if the connection is active
+        // Проверка, активно ли соединение
         if (connections[i].rx_bytes == 0 && connections[i].tx_bytes == 0 &&
             connections[i].rx_packets == 0 && connections[i].tx_packets == 0) {
-            continue; // Skip inactive connections
+            continue; // Пропустить неактивные соединения
         }
 
         char src[100], dst[100], rx_bw[16], tx_bw[16];
@@ -561,60 +571,158 @@ void display_statistics() {
         int is_icmp = (strcmp(connections[i].protocol, "icmp") == 0 ||
                        strcmp(connections[i].protocol, "icmp6") == 0);
 
-        // Format source and destination IP addresses
+        // Определение направления и установка src и dst
         if (is_icmp) {
-            // For ICMP, display only IP addresses
-            if (is_ipv6_address(connections[i].ip1)) {
-                snprintf(src, sizeof(src), "[%s]", connections[i].ip1);
-            } else {
-                snprintf(src, sizeof(src), "%s", connections[i].ip1);
-            }
+            // Для ICMP отображаем только IP-адреса без портов
+            if (connections[i].last_direction == 1) { // Tx: локальный -> удаленный
+                // Определяем, какой из IP локальный
+                if (is_local_ip(connections[i].ip1)) {
+                    // ip1 локальный, ip2 удаленный
+                    if (is_ipv6_address(connections[i].ip1)) {
+                        snprintf(src, sizeof(src), "[%s]", connections[i].ip1);
+                    } else {
+                        snprintf(src, sizeof(src), "%s", connections[i].ip1);
+                    }
 
-            if (is_ipv6_address(connections[i].ip2)) {
-                snprintf(dst, sizeof(dst), "[%s]", connections[i].ip2);
-            } else {
-                snprintf(dst, sizeof(dst), "%s", connections[i].ip2);
+                    if (is_ipv6_address(connections[i].ip2)) {
+                        snprintf(dst, sizeof(dst), "[%s]", connections[i].ip2);
+                    } else {
+                        snprintf(dst, sizeof(dst), "%s", connections[i].ip2);
+                    }
+                } else {
+                    // ip2 локальный, ip1 удаленный
+                    if (is_ipv6_address(connections[i].ip2)) {
+                        snprintf(src, sizeof(src), "[%s]", connections[i].ip2);
+                    } else {
+                        snprintf(src, sizeof(src), "%s", connections[i].ip2);
+                    }
+
+                    if (is_ipv6_address(connections[i].ip1)) {
+                        snprintf(dst, sizeof(dst), "[%s]", connections[i].ip1);
+                    } else {
+                        snprintf(dst, sizeof(dst), "%s", connections[i].ip1);
+                    }
+                }
+            } else { // Rx: удаленный -> локальный
+                if (is_local_ip(connections[i].ip2)) {
+                    // ip2 локальный, ip1 удаленный
+                    if (is_ipv6_address(connections[i].ip1)) {
+                        snprintf(src, sizeof(src), "[%s]", connections[i].ip1);
+                    } else {
+                        snprintf(src, sizeof(src), "%s", connections[i].ip1);
+                    }
+
+                    if (is_ipv6_address(connections[i].ip2)) {
+                        snprintf(dst, sizeof(dst), "[%s]", connections[i].ip2);
+                    } else {
+                        snprintf(dst, sizeof(dst), "%s", connections[i].ip2);
+                    }
+                } else {
+                    // ip1 локальный, ip2 удаленный
+                    if (is_ipv6_address(connections[i].ip2)) {
+                        snprintf(src, sizeof(src), "[%s]", connections[i].ip2);
+                    } else {
+                        snprintf(src, sizeof(src), "%s", connections[i].ip2);
+                    }
+
+                    if (is_ipv6_address(connections[i].ip1)) {
+                        snprintf(dst, sizeof(dst), "[%s]", connections[i].ip1);
+                    } else {
+                        snprintf(dst, sizeof(dst), "%s", connections[i].ip1);
+                    }
+                }
             }
         } else {
-            // For other protocols, display IP addresses and ports
-            if (is_ipv6_address(connections[i].ip1)) {
-                snprintf(src, sizeof(src), "[%s]:%d", connections[i].ip1, connections[i].port1);
-            } else {
-                snprintf(src, sizeof(src), "%s:%d", connections[i].ip1, connections[i].port1);
-            }
+            // Для других протоколов отображаем IP-адреса и порты
+            if (connections[i].last_direction == 1) { // Tx: локальный:порт1 -> удаленный:порт2
+                if (is_local_ip(connections[i].ip1)) {
+                    // ip1 локальный
+                    if (is_ipv6_address(connections[i].ip1)) {
+                        snprintf(src, sizeof(src), "[%s]:%d", connections[i].ip1, connections[i].port1);
+                    } else {
+                        snprintf(src, sizeof(src), "%s:%d", connections[i].ip1, connections[i].port1);
+                    }
 
-            if (is_ipv6_address(connections[i].ip2)) {
-                snprintf(dst, sizeof(dst), "[%s]:%d", connections[i].ip2, connections[i].port2);
-            } else {
-                snprintf(dst, sizeof(dst), "%s:%d", connections[i].ip2, connections[i].port2);
+                    if (is_ipv6_address(connections[i].ip2)) {
+                        snprintf(dst, sizeof(dst), "[%s]:%d", connections[i].ip2, connections[i].port2);
+                    } else {
+                        snprintf(dst, sizeof(dst), "%s:%d", connections[i].ip2, connections[i].port2);
+                    }
+                } else {
+                    // ip2 локальный
+                    if (is_ipv6_address(connections[i].ip2)) {
+                        snprintf(src, sizeof(src), "[%s]:%d", connections[i].ip2, connections[i].port2);
+                    } else {
+                        snprintf(src, sizeof(src), "%s:%d", connections[i].ip2, connections[i].port2);
+                    }
+
+                    if (is_ipv6_address(connections[i].ip1)) {
+                        snprintf(dst, sizeof(dst), "[%s]:%d", connections[i].ip1, connections[i].port1);
+                    } else {
+                        snprintf(dst, sizeof(dst), "%s:%d", connections[i].ip1, connections[i].port1);
+                    }
+                }
+            } else { // Rx: удаленный:порт2 -> локальный:порт1
+                if (is_local_ip(connections[i].ip2)) {
+                    // ip2 локальный
+                    if (is_ipv6_address(connections[i].ip2)) {
+                        snprintf(src, sizeof(src), "[%s]:%d", connections[i].ip1, connections[i].port1);
+                    } else {
+                        snprintf(src, sizeof(src), "%s:%d", connections[i].ip1, connections[i].port1);
+                    }
+
+                    if (is_ipv6_address(connections[i].ip1)) {
+                        snprintf(dst, sizeof(dst), "[%s]:%d", connections[i].ip2, connections[i].port2);
+                    } else {
+                        snprintf(dst, sizeof(dst), "%s:%d", connections[i].ip2, connections[i].port2);
+                    }
+                } else {
+                    // ip1 локальный
+                    if (is_ipv6_address(connections[i].ip1)) {
+                        snprintf(src, sizeof(src), "[%s]:%d", connections[i].ip2, connections[i].port2);
+                    } else {
+                        snprintf(src, sizeof(src), "%s:%d", connections[i].ip2, connections[i].port2);
+                    }
+
+                    if (is_ipv6_address(connections[i].ip2)) {
+                        snprintf(dst, sizeof(dst), "[%s]:%d", connections[i].ip1, connections[i].port1);
+                    } else {
+                        snprintf(dst, sizeof(dst), "%s:%d", connections[i].ip1, connections[i].port1);
+                    }
+                }
             }
+        }
+
+        // Логирование направления для отладки
+        if (debug_mode) {
+            fprintf(log_file, "LAST DIRECTION of %d: %d\n", i, connections[i].last_direction);
         }
 
         double time_diff = (double)interval;
         if (time_diff == 0) time_diff = 1.0;
 
-        // Format bandwidth
+        // Форматирование пропускной способности
         format_bandwidth(connections[i].rx_bytes, time_diff, rx_bw, rx_unit);
         format_bandwidth(connections[i].tx_bytes, time_diff, tx_bw, tx_unit);
 
-        // Format packets per second
+        // Форматирование пакетов в секунду
         snprintf(rx_pps_str, sizeof(rx_pps_str), "%.1f", connections[i].rx_packets / time_diff);
         snprintf(tx_pps_str, sizeof(tx_pps_str), "%.1f", connections[i].tx_packets / time_diff);
 
-        // Display connection statistics
+        // Отображение статистики соединения
         mvprintw(displayed_connections + 2, 0, "%-35s %-30s %-7s %6s%-1s %6s %6s%-1s %6s",
                  src, dst, connections[i].protocol,
                  rx_bw, rx_unit, rx_pps_str,
                  tx_bw, tx_unit, tx_pps_str);
 
         if (debug_mode) {
-            fprintf(log_file, "Connection %d: %s <-> %s, Protocol: %s, Rx: %s%s (%s p/s), Tx: %s%s (%s p/s)\n",
+            fprintf(log_file, "Connection %d: %s -> %s, Protocol: %s, Rx: %s%s (%s p/s), Tx: %s%s (%s p/s)\n",
                     i, src, dst, connections[i].protocol,
                     rx_bw, rx_unit, rx_pps_str,
                     tx_bw, tx_unit, tx_pps_str);
         }
 
-        // Reset counters
+        // Сброс счетчиков
         connections[i].rx_bytes = 0;
         connections[i].tx_bytes = 0;
         connections[i].rx_packets = 0;
@@ -623,9 +731,11 @@ void display_statistics() {
         displayed_connections++;
     }
 
-    // Refresh screen
+    // Обновить экран
     refresh();
 }
+
+
 
 // Compare bytes function
 int compare_bytes(const void *a, const void *b) {
