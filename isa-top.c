@@ -542,71 +542,71 @@ void display_statistics() {
                     if (ip1_local) { // Tx: local -> remote
                         // ip1 local -> ip2 remote
                         if (is_ipv6_address(connections[i].ip1)) {
-                            snprintf(src, sizeof(src), "[%s]", connections[i].ip1);
+                            snprintf(src, sizeof(src), "[%.45s]", connections[i].ip1);
                         } else {
-                            snprintf(src, sizeof(src), "%s", connections[i].ip1);
+                            snprintf(src, sizeof(src), "%.45s", connections[i].ip1);
                         }
 
                         if (is_ipv6_address(connections[i].ip2)) {
-                            snprintf(dst, sizeof(dst), "[%s]", connections[i].ip2);
+                            snprintf(dst, sizeof(dst), "[%.45s]", connections[i].ip2);
                         } else {
-                            snprintf(dst, sizeof(dst), "%s", connections[i].ip2);
+                            snprintf(dst, sizeof(dst), "%.45s", connections[i].ip2);
                         }
                     } else { // ip2_local
                         // ip2 local -> ip1 remote
                         if (is_ipv6_address(connections[i].ip2)) {
-                            snprintf(src, sizeof(src), "[%s]", connections[i].ip2);
+                            snprintf(src, sizeof(src), "[%.45s]", connections[i].ip2);
                         } else {
-                            snprintf(src, sizeof(src), "%s", connections[i].ip2);
+                            snprintf(src, sizeof(src), "%.45s", connections[i].ip2);
                         }
 
                         if (is_ipv6_address(connections[i].ip1)) {
-                            snprintf(dst, sizeof(dst), "[%s]", connections[i].ip1);
+                            snprintf(dst, sizeof(dst), "[%.45s]", connections[i].ip1);
                         } else {
-                            snprintf(dst, sizeof(dst), "%s", connections[i].ip1);
+                            snprintf(dst, sizeof(dst), "%.45s", connections[i].ip1);
                         }
                     }
                 } else { // Rx: remote -> local
                     if (ip2_local) {
                         // ip2 local, ip1 remote
                         if (is_ipv6_address(connections[i].ip1)) {
-                            snprintf(src, sizeof(src), "[%s]", connections[i].ip1);
+                            snprintf(src, sizeof(src), "[%.45s]", connections[i].ip1);
                         } else {
-                            snprintf(src, sizeof(src), "%s", connections[i].ip1);
+                            snprintf(src, sizeof(src), "%.45s", connections[i].ip1);
                         }
 
                         if (is_ipv6_address(connections[i].ip2)) {
-                            snprintf(dst, sizeof(dst), "[%s]", connections[i].ip2);
+                            snprintf(dst, sizeof(dst), "[%.45s]", connections[i].ip2);
                         } else {
-                            snprintf(dst, sizeof(dst), "%s", connections[i].ip2);
+                            snprintf(dst, sizeof(dst), "%.45s", connections[i].ip2);
                         }
                     } else { // ip1_local
                         // ip1 local, ip2 remote
                         if (is_ipv6_address(connections[i].ip2)) {
-                            snprintf(src, sizeof(src), "[%s]", connections[i].ip2);
+                            snprintf(src, sizeof(src), "[%.45s]", connections[i].ip2);
                         } else {
-                            snprintf(src, sizeof(src), "%s", connections[i].ip2);
+                            snprintf(src, sizeof(src), "%.45s", connections[i].ip2);
                         }
 
                         if (is_ipv6_address(connections[i].ip1)) {
-                            snprintf(dst, sizeof(dst), "[%s]", connections[i].ip1);
+                            snprintf(dst, sizeof(dst), "[%.45s]", connections[i].ip1);
                         } else {
-                            snprintf(dst, sizeof(dst), "%s", connections[i].ip1);
+                            snprintf(dst, sizeof(dst), "%.45s", connections[i].ip1);
                         }
                     }
                 }
             } else {
                 // If no local IP found, set src=ip1, dst=ip2
                 if (is_ipv6_address(connections[i].ip1)) {
-                    snprintf(src, sizeof(src), "[%s]", connections[i].ip1);
+                    snprintf(src, sizeof(src), "[%.45s]", connections[i].ip1);
                 } else {
-                    snprintf(src, sizeof(src), "%s", connections[i].ip1);
+                    snprintf(src, sizeof(src), "%.45s", connections[i].ip1);
                 }
 
                 if (is_ipv6_address(connections[i].ip2)) {
                     snprintf(dst, sizeof(dst), "[%s]", connections[i].ip2);
                 } else {
-                    snprintf(dst, sizeof(dst), "%s", connections[i].ip2);
+                    snprintf(dst, sizeof(dst), "%.45s", connections[i].ip2);
                 }
 
                 if (debug_mode) {
