@@ -259,10 +259,11 @@ void display_statistics() {
          
 
         if (debug_mode) {
-            fprintf(log_file, "Connection %d: %s -> %s, Protocol: %s, Rx: %s%s (%s p/s), Tx: %s%s (%s p/s)\n",
+            fprintf(log_file, "Connection %d: %s -> %s, Protocol: %s, Rx: %s%s (%s %s p/s), Tx: %s%s (%s %s p/s)\n",
                     i, src, dst, connections[i].protocol,
-                    rx_bw, rx_unit, rx_pps_str,
-                    tx_bw, tx_unit, tx_pps_str);
+                    rx_bw, rx_unit, rx_pps_str, rx_pps_unit, // Rx bandwidth and packets
+                    tx_bw, tx_unit, tx_pps_str, tx_pps_unit  // Tx bandwidth and packets
+            );
         }
 
         // Reset the connection statistics
